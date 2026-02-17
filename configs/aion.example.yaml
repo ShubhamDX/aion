@@ -1,0 +1,79 @@
+# AION - Intelligent LLM Cost Router
+# Example configuration file
+# Copy to configs/aion.yaml and customize for your setup.
+# Environment variables can be used with ${VAR} or $VAR syntax.
+
+server:
+  port: 8080
+  read_timeout: "30s"
+  write_timeout: "60s"
+  shutdown_timeout: "10s"
+
+auth:
+  enabled: true
+  keys:
+    - key: "sk-aion-dev-key-change-me"
+      name: "development"
+      budget:
+        daily_limit_usd: 10.0
+        monthly_limit_usd: 100.0
+    # Add more keys as needed:
+    # - key: "sk-aion-prod-xxx"
+    #   name: "production"
+    #   budget:
+    #     daily_limit_usd: 100.0
+    #     monthly_limit_usd: 1000.0
+
+providers:
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    # base_url: "https://api.openai.com/v1"  # Optional, defaults to OpenAI
+    models:
+      - id: "gpt-4o-mini"
+        tier: 1
+        input_price_per_1m: 0.15
+        output_price_per_1m: 0.60
+      - id: "gpt-4o"
+        tier: 2
+        input_price_per_1m: 2.50
+        output_price_per_1m: 10.00
+      - id: "o1"
+        tier: 3
+        input_price_per_1m: 15.00
+        output_price_per_1m: 60.00
+
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    models:
+      - id: "claude-haiku-3-5"
+        tier: 1
+        input_price_per_1m: 0.80
+        output_price_per_1m: 4.00
+      - id: "claude-sonnet-4"
+        tier: 2
+        input_price_per_1m: 3.00
+        output_price_per_1m: 15.00
+      - id: "claude-opus-4"
+        tier: 3
+        input_price_per_1m: 15.00
+        output_price_per_1m: 75.00
+
+  # openrouter:
+  #   api_key: "${OPENROUTER_API_KEY}"
+  #   models:
+  #     - id: "google/gemini-flash-1.5"
+  #       tier: 1
+  #       input_price_per_1m: 0.075
+  #       output_price_per_1m: 0.30
+
+routing:
+  strategy: "cheapest"  # Options: cheapest, fallback
+  classifier:
+    tier1_threshold: 0.35   # Score < 0.35 -> Tier 1 (simple)
+    tier2_threshold: 0.70   # Score 0.35-0.70 -> Tier 2 (medium), > 0.70 -> Tier 3 (complex)
+  fallback_enabled: true    # Allow fallback to adjacent tiers if no model available
+
+telemetry:
+  db_path: "./data/aion.db"
+  batch_size: 100
+  flush_interval: "5s"
