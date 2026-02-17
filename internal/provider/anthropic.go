@@ -203,12 +203,12 @@ func (p *AnthropicProvider) translateRequest(req *types.ChatCompletionRequest, m
 	// Extract system message and convert the rest.
 	for _, m := range req.Messages {
 		if m.Role == "system" {
-			aReq.System = m.Content
+			aReq.System = m.ContentString()
 			continue
 		}
 		aReq.Messages = append(aReq.Messages, anthropicMsg{
 			Role:    m.Role,
-			Content: m.Content,
+			Content: m.ContentString(),
 		})
 	}
 
@@ -235,7 +235,8 @@ func (p *AnthropicProvider) translateResponse(aResp *anthropicResponse) *types.C
 	for _, block := range aResp.Content {
 		switch block.Type {
 		case "text":
-			msg.Content = block.Text
+			b, _ := json.Marshal(block.Text)
+			msg.Content = b
 		case "tool_use":
 			args := string(block.Input)
 			toolCalls = append(toolCalls, types.ToolCall{

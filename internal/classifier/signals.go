@@ -19,7 +19,7 @@ func tokenVolumeSignal(req *types.ChatCompletionRequest) float64 {
 	}
 	totalChars := 0
 	for _, msg := range req.Messages {
-		totalChars += len(msg.Content)
+		totalChars += len(msg.ContentString())
 	}
 	estimatedTokens := float64(totalChars) / 4.0
 	return math.Min(1.0, estimatedTokens/4000.0)
@@ -44,7 +44,7 @@ func systemPromptSignal(req *types.ChatCompletionRequest) float64 {
 	var systemContent string
 	for _, msg := range req.Messages {
 		if strings.ToLower(msg.Role) == "system" {
-			systemContent = msg.Content
+			systemContent = msg.ContentString()
 			break
 		}
 	}
@@ -89,7 +89,7 @@ func contentKeywordsSignal(req *types.ChatCompletionRequest) float64 {
 	var sb strings.Builder
 	for _, msg := range req.Messages {
 		if strings.ToLower(msg.Role) == "user" {
-			sb.WriteString(msg.Content)
+			sb.WriteString(msg.ContentString())
 			sb.WriteByte(' ')
 		}
 	}

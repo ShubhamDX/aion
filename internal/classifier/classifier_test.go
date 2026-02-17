@@ -1,12 +1,19 @@
 package classifier
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/types"
 )
+
+// raw is a test helper that wraps a string as json.RawMessage.
+func raw(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return b
+}
 
 func newTestClassifier() *Classifier {
 	return New(config.ClassifierConfig{
@@ -19,7 +26,7 @@ func TestSimpleRequest_Tier1(t *testing.T) {
 	c := newTestClassifier()
 	req := &types.ChatCompletionRequest{
 		Messages: []types.Message{
-			{Role: "user", Content: "what is 2+2"},
+			{Role: "user", Content: raw("what is 2+2")},
 		},
 	}
 	tier, score, signals := c.Classify(req)
@@ -35,12 +42,12 @@ func TestMediumRequest_Tier2(t *testing.T) {
 	c := newTestClassifier()
 	req := &types.ChatCompletionRequest{
 		Messages: []types.Message{
-			{Role: "system", Content: "You are an expert assistant. Please analyze carefully and provide detailed step-by-step reasoning."},
-			{Role: "user", Content: "Hello, I need help with a project."},
-			{Role: "assistant", Content: "Sure, I'd be happy to help."},
-			{Role: "user", Content: "Can you explain how to design a REST API? Compare different approaches and evaluate their tradeoffs."},
-			{Role: "assistant", Content: "There are several approaches to consider."},
-			{Role: "user", Content: "Now analyze the performance implications and explain the tradeoffs. Compare REST vs GraphQL and evaluate which is better for this use case. Also help me debug this issue."},
+			{Role: "system", Content: raw("You are an expert assistant. Please analyze carefully and provide detailed step-by-step reasoning.")},
+			{Role: "user", Content: raw("Hello, I need help with a project.")},
+			{Role: "assistant", Content: raw("Sure, I'd be happy to help.")},
+			{Role: "user", Content: raw("Can you explain how to design a REST API? Compare different approaches and evaluate their tradeoffs.")},
+			{Role: "assistant", Content: raw("There are several approaches to consider.")},
+			{Role: "user", Content: raw("Now analyze the performance implications and explain the tradeoffs. Compare REST vs GraphQL and evaluate which is better for this use case. Also help me debug this issue.")},
 		},
 		Tools: []types.Tool{
 			{Type: "function", Function: types.FunctionDef{Name: "search", Description: "search the web"}},
@@ -63,8 +70,8 @@ func TestComplexRequest_Tier3(t *testing.T) {
 
 	req := &types.ChatCompletionRequest{
 		Messages: []types.Message{
-			{Role: "system", Content: longSystemPrompt},
-			{Role: "user", Content: "Please analyze and refactor this code:\n```go\nfunc process(items []Item) {\n\tfor i := 0; i < len(items); i++ {\n\t\t// process\n\t}\n}\n```\nAlso implement a new optimized version, debug any issues, and evaluate the performance. Design an architecture that handles $10M requests per day."},
+			{Role: "system", Content: raw(longSystemPrompt)},
+			{Role: "user", Content: raw("Please analyze and refactor this code:\n```go\nfunc process(items []Item) {\n\tfor i := 0; i < len(items); i++ {\n\t\t// process\n\t}\n}\n```\nAlso implement a new optimized version, debug any issues, and evaluate the performance. Design an architecture that handles $10M requests per day.")},
 		},
 		Tools: []types.Tool{
 			{Type: "function", Function: types.FunctionDef{Name: "search"}},
@@ -88,7 +95,7 @@ func TestUserHintOverride(t *testing.T) {
 	preferredTier := 3
 	req := &types.ChatCompletionRequest{
 		Messages: []types.Message{
-			{Role: "user", Content: "hi"},
+			{Role: "user", Content: raw("hi")},
 		},
 		AIONPreferences: &types.AIONPreferences{
 			PreferredTier: &preferredTier,
@@ -140,7 +147,7 @@ func TestPreferQualityHint(t *testing.T) {
 	c := newTestClassifier()
 	req := &types.ChatCompletionRequest{
 		Messages: []types.Message{
-			{Role: "user", Content: "hello"},
+			{Role: "user", Content: raw("hello")},
 		},
 		AIONPreferences: &types.AIONPreferences{
 			PreferQuality: true,
@@ -156,7 +163,7 @@ func TestPreferSpeedHint(t *testing.T) {
 	c := newTestClassifier()
 	req := &types.ChatCompletionRequest{
 		Messages: []types.Message{
-			{Role: "user", Content: "hello"},
+			{Role: "user", Content: raw("hello")},
 		},
 		AIONPreferences: &types.AIONPreferences{
 			PreferSpeed: true,

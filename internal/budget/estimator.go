@@ -19,7 +19,7 @@ func NewEstimator(table *pricing.Table) *Estimator {
 func EstimateInputTokens(req *types.ChatCompletionRequest) int {
 	totalChars := 0
 	for _, msg := range req.Messages {
-		totalChars += len(msg.Content)
+		totalChars += len(msg.ContentString())
 		totalChars += len(msg.Role) + 4 // role + formatting overhead
 	}
 	// Add overhead for tools.
