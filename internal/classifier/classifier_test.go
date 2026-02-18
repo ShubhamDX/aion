@@ -7,7 +7,38 @@ import (
 
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/types"
+	"github.com/ShubhamDX/aion/models"
 )
+
+func TestEmbeddedDefaultModel(t *testing.T) {
+	if len(models.DefaultIntentModelJSON) == 0 {
+		t.Fatal("embedded default model is empty")
+	}
+	m, err := LoadIntentModelFromBytes(models.DefaultIntentModelJSON)
+	if err != nil {
+		t.Fatalf("failed to load embedded default model: %v", err)
+	}
+	if len(m.Categories) != 14 {
+		t.Errorf("expected 14 categories, got %d", len(m.Categories))
+	}
+
+	// Smoke-test predictions.
+	tests := []struct {
+		input   string
+		wantMin float64
+		wantMax float64
+	}{
+		{"hi", 0.00, 0.35},
+		{"what is the capital of France", 0.00, 0.30},
+		{"design a distributed system at scale", 0.40, 1.00},
+	}
+	for _, tt := range tests {
+		score := m.Predict(tt.input)
+		if score < tt.wantMin || score > tt.wantMax {
+			t.Errorf("Predict(%q) = %.4f, want [%.2f, %.2f]", tt.input, score, tt.wantMin, tt.wantMax)
+		}
+	}
+}
 
 // raw is a test helper that wraps a string as json.RawMessage.
 func raw(s string) json.RawMessage {
@@ -172,5 +203,102 @@ func TestPreferSpeedHint(t *testing.T) {
 	_, _, signals := c.Classify(req)
 	if signals["user_hints"] != 0.1 {
 		t.Errorf("expected user_hints = 0.1 for PreferSpeed, got %.4f", signals["user_hints"])
+	}
+}
+
+// --- Intent signal unit tests ---
+
+func makeIntentReq(userMsg string) *types.ChatCompletionRequest {
+	return &types.ChatCompletionRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: raw(userMsg)},
+		},
+	}
+}
+
+func TestIntentSignal_Greeting(t *testing.T) {
+	score := intentSignal(makeIntentReq("hi"))
+	if score != 0.0 {
+		t.Errorf("expected 0.0 for greeting, got %.4f", score)
+	}
+}
+
+func TestIntentSignal_FactualLookup(t *testing.T) {
+	score := intentSignal(makeIntentReq("what is the capital of France"))
+	if score != 0.05 {
+		t.Errorf("expected 0.05 for factual lookup, got %.4f", score)
+	}
+}
+
+func TestIntentSignal_CodeGeneration(t *testing.T) {
+	score := intentSignal(makeIntentReq("write a function to sort an array"))
+	if score != 0.45 {
+		t.Errorf("expected 0.45 for code generation, got %.4f", score)
+	}
+}
+
+func TestIntentSignal_MultiStep(t *testing.T) {
+	score := intentSignal(makeIntentReq("first, analyze the requirements then design the architecture"))
+	if score < 0.75 {
+		t.Errorf("expected >= 0.75 for multi-step task, got %.4f", score)
+	}
+}
+
+func TestIntentSignal_ArchitectureDesign(t *testing.T) {
+	score := intentSignal(makeIntentReq("design a system that handles millions of requests at scale"))
+	if score < 0.80 {
+		t.Errorf("expected >= 0.80 for architecture/design, got %.4f", score)
+	}
+}
+
+// --- ML model-based intent tests ---
+
+func TestIntentModel_LoadAndPredict(t *testing.T) {
+	modelPath := "../../models/intent_classifier.json"
+	model, err := LoadIntentModel(modelPath)
+	if err != nil {
+		t.Skipf("intent model not available at %s: %v", modelPath, err)
+	}
+
+	tests := []struct {
+		input   string
+		wantMin float64
+		wantMax float64
+	}{
+		{"hi", 0.00, 0.35},
+		{"what is 2+2", 0.00, 0.30},
+		{"design a system that handles millions of users at scale", 0.50, 1.00},
+		{"fix this bug in my login function", 0.30, 0.70},
+		{"evaluate your own reasoning about this problem", 0.70, 1.00},
+	}
+	for _, tt := range tests {
+		score := model.Predict(tt.input)
+		if score < tt.wantMin || score > tt.wantMax {
+			t.Errorf("Predict(%q) = %.4f, want [%.2f, %.2f]", tt.input, score, tt.wantMin, tt.wantMax)
+		}
+	}
+}
+
+func TestMakeIntentSignal_WithModel(t *testing.T) {
+	modelPath := "../../models/intent_classifier.json"
+	model, err := LoadIntentModel(modelPath)
+	if err != nil {
+		t.Skipf("intent model not available: %v", err)
+	}
+
+	fn := makeIntentSignal(model)
+
+	// Architecture prompt should get a high score from the model + structural bonuses.
+	req := makeIntentReq("design a system that handles millions of users at scale")
+	score := fn(req)
+	if score < 0.50 {
+		t.Errorf("model-based intent score for architecture prompt = %.4f, expected >= 0.50", score)
+	}
+
+	// Greeting should stay low.
+	reqHi := makeIntentReq("hi")
+	scoreHi := fn(reqHi)
+	if scoreHi > 0.30 {
+		t.Errorf("model-based intent score for greeting = %.4f, expected <= 0.30", scoreHi)
 	}
 }

@@ -1,8 +1,11 @@
 package classifier
 
 import (
+	"log"
+
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/types"
+	"github.com/ShubhamDX/aion/models"
 )
 
 // WeightedSignal pairs a named signal extractor with its weight in the overall score.
@@ -22,14 +25,46 @@ type Classifier struct {
 
 // New creates a Classifier with the default signal set and the tier thresholds
 // from the supplied configuration.
+//
+// Intent model resolution order:
+//  1. Custom model at IntentModelPath (user-trained on their own data)
+//  2. Embedded default model (ships with the binary, trained on anonymized data)
+//  3. Pattern-matching heuristics (zero-dependency fallback)
 func New(cfg config.ClassifierConfig) *Classifier {
+	var intentModel *IntentModel
+
+	// 1. Try custom model from config path.
+	if cfg.IntentModelPath != "" {
+		m, err := LoadIntentModel(cfg.IntentModelPath)
+		if err != nil {
+			log.Printf("classifier: custom intent model not loaded (%v), trying default", err)
+		} else {
+			log.Printf("classifier: loaded custom intent model from %s (%d vocab, %d classes)",
+				cfg.IntentModelPath, len(m.Vocabulary), len(m.Categories))
+			intentModel = m
+		}
+	}
+
+	// 2. Fall back to embedded default model.
+	if intentModel == nil {
+		m, err := LoadIntentModelFromBytes(models.DefaultIntentModelJSON)
+		if err != nil {
+			log.Printf("classifier: embedded default model failed (%v), using pattern fallback", err)
+		} else {
+			log.Printf("classifier: using embedded default intent model (%d vocab, %d classes)",
+				len(m.Vocabulary), len(m.Categories))
+			intentModel = m
+		}
+	}
+
 	return &Classifier{
 		signals: []WeightedSignal{
-			{"token_volume", 0.20, tokenVolumeSignal},
-			{"message_count", 0.10, messageCountSignal},
-			{"system_prompt", 0.15, systemPromptSignal},
-			{"tool_presence", 0.15, toolPresenceSignal},
-			{"content_keywords", 0.25, contentKeywordsSignal},
+			{"token_volume", 0.15, tokenVolumeSignal},
+			{"message_count", 0.05, messageCountSignal},
+			{"system_prompt", 0.10, systemPromptSignal},
+			{"tool_presence", 0.10, toolPresenceSignal},
+			{"content_keywords", 0.15, contentKeywordsSignal},
+			{"intent", 0.30, makeIntentSignal(intentModel)},
 			{"user_hints", 0.15, userHintsSignal},
 		},
 		t1Threshold: cfg.Tier1Threshold,
