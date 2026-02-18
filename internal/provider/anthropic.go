@@ -145,7 +145,7 @@ func (p *AnthropicProvider) Send(ctx context.Context, req *types.ChatCompletionR
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 
-	chatResp := p.translateResponse(&aResp)
+	chatResp := translateAnthropicResponse(&aResp)
 	return &Response{
 		ChatResponse: chatResp,
 		StatusCode:   resp.StatusCode,
@@ -226,7 +226,7 @@ func (p *AnthropicProvider) translateRequest(req *types.ChatCompletionRequest, m
 
 // ---------- response translation ----------
 
-func (p *AnthropicProvider) translateResponse(aResp *anthropicResponse) *types.ChatCompletionResponse {
+func translateAnthropicResponse(aResp *anthropicResponse) *types.ChatCompletionResponse {
 	msg := types.Message{
 		Role: "assistant",
 	}

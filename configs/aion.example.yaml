@@ -66,6 +66,37 @@ providers:
   #       input_price_per_1m: 0.075
   #       output_price_per_1m: 0.30
 
+  # bedrock:
+  #   api_key: "${AWS_BEARER_TOKEN_BEDROCK}"
+  #   region: "us-east-1"
+  #   models:
+  #     - id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  #       tier: 1
+  #       input_price_per_1m: 0.80
+  #       output_price_per_1m: 4.00
+  #     - id: "us.anthropic.claude-sonnet-4-6-v1"
+  #       tier: 2
+  #       input_price_per_1m: 3.00
+  #       output_price_per_1m: 15.00
+  #     - id: "us.anthropic.claude-opus-4-6-v1"
+  #       tier: 3
+  #       input_price_per_1m: 15.00
+  #       output_price_per_1m: 75.00
+
+  # vertex:
+  #   api_key: "${VERTEX_BEARER_TOKEN}"  # gcloud auth print-access-token
+  #   region: "us-east5"
+  #   project_id: "your-gcp-project-id"
+  #   models:
+  #     - id: "claude-sonnet-4-6"
+  #       tier: 2
+  #       input_price_per_1m: 3.00
+  #       output_price_per_1m: 15.00
+  #     - id: "claude-opus-4-6"
+  #       tier: 3
+  #       input_price_per_1m: 15.00
+  #       output_price_per_1m: 75.00
+
 routing:
   strategy: "cheapest"  # Options: cheapest, fallback
   classifier:

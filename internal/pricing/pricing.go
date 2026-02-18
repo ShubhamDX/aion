@@ -40,6 +40,8 @@ func NewTable(providers config.ProvidersConfig) *Table {
 	addModels("openai", providers.OpenAI)
 	addModels("anthropic", providers.Anthropic)
 	addModels("openrouter", providers.OpenRouter)
+	addModels("bedrock", providers.Bedrock)
+	addModels("vertex", providers.Vertex)
 
 	return &Table{prices: prices}
 }

@@ -53,6 +53,8 @@ func NewRouter(cfg *config.Config, health HealthChecker) *Router {
 	addProvider("openai", cfg.Providers.OpenAI)
 	addProvider("anthropic", cfg.Providers.Anthropic)
 	addProvider("openrouter", cfg.Providers.OpenRouter)
+	addProvider("bedrock", cfg.Providers.Bedrock)
+	addProvider("vertex", cfg.Providers.Vertex)
 
 	return &Router{
 		models:   models,

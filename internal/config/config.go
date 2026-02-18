@@ -48,13 +48,17 @@ type ProvidersConfig struct {
 	OpenAI     *ProviderConfig `yaml:"openai,omitempty"`
 	Anthropic  *ProviderConfig `yaml:"anthropic,omitempty"`
 	OpenRouter *ProviderConfig `yaml:"openrouter,omitempty"`
+	Bedrock    *ProviderConfig `yaml:"bedrock,omitempty"`
+	Vertex     *ProviderConfig `yaml:"vertex,omitempty"`
 }
 
 // ProviderConfig is the configuration for a single LLM provider.
 type ProviderConfig struct {
-	APIKey  string        `yaml:"api_key"`
-	BaseURL string        `yaml:"base_url,omitempty"`
-	Models  []ModelConfig `yaml:"models"`
+	APIKey    string        `yaml:"api_key"`
+	BaseURL   string        `yaml:"base_url,omitempty"`
+	Region    string        `yaml:"region,omitempty"`
+	ProjectID string        `yaml:"project_id,omitempty"`
+	Models    []ModelConfig `yaml:"models"`
 }
 
 // ModelConfig describes a model exposed through a provider.

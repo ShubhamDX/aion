@@ -73,6 +73,12 @@ func main() {
 	if cfg.Providers.OpenRouter != nil {
 		registry.Register(provider.NewOpenRouter(cfg.Providers.OpenRouter))
 	}
+	if cfg.Providers.Bedrock != nil {
+		registry.Register(provider.NewBedrock(cfg.Providers.Bedrock))
+	}
+	if cfg.Providers.Vertex != nil {
+		registry.Register(provider.NewVertex(cfg.Providers.Vertex))
+	}
 
 	// Build classifier.
 	cls := classifier.New(cfg.Routing.Classifier)
@@ -210,6 +216,8 @@ func listModelsHandler(cfg *config.Config) http.HandlerFunc {
 	addModels("openai", cfg.Providers.OpenAI)
 	addModels("anthropic", cfg.Providers.Anthropic)
 	addModels("openrouter", cfg.Providers.OpenRouter)
+	addModels("bedrock", cfg.Providers.Bedrock)
+	addModels("vertex", cfg.Providers.Vertex)
 
 	resp := types.ModelListResponse{
 		Object: "list",
