@@ -82,14 +82,25 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ### Option C: Docker Hub
 
 ```bash
-docker pull shubhamdx/aion:latest
+# Pull the image
+docker pull shubhamdx/aion:latest    # or shubhamdx/aion:0.2.0
 
+# Grab the example config
+curl -O https://raw.githubusercontent.com/ShubhamDX/aion/main/configs/aion.example.yaml
+cp aion.example.yaml configs/aion.yaml
+# Edit configs/aion.yaml -- uncomment providers, add API keys
+
+# Run
 docker run -d \
+  --name aion \
   -p 8080:8080 \
   -v $(pwd)/configs/aion.yaml:/app/configs/aion.yaml:ro \
   -v aion-data:/app/data \
   --env-file .env \
   shubhamdx/aion:latest
+
+# Verify
+curl http://localhost:8080/health
 ```
 
 ---
