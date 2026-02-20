@@ -50,6 +50,8 @@ type ProvidersConfig struct {
 	OpenRouter *ProviderConfig `yaml:"openrouter,omitempty"`
 	Bedrock    *ProviderConfig `yaml:"bedrock,omitempty"`
 	Vertex     *ProviderConfig `yaml:"vertex,omitempty"`
+	Gemini     *ProviderConfig `yaml:"gemini,omitempty"`
+	Grok       *ProviderConfig `yaml:"grok,omitempty"`
 }
 
 // ProviderConfig is the configuration for a single LLM provider.

@@ -127,7 +127,16 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Set AION response headers.
+	// 5. Log routing decision and set AION response headers.
+	slog.Info("routed",
+		"request_id", requestID,
+		"ingress", "openai",
+		"requested_model", model,
+		"routed_model", selectedModel.ID,
+		"provider", selectedModel.Provider,
+		"tier", int(tier),
+		"stream", req.Stream,
+	)
 	w.Header().Set("X-AION-Tier", fmt.Sprintf("%d", int(tier)))
 	w.Header().Set("X-AION-Model", selectedModel.ID)
 	w.Header().Set("X-Request-ID", requestID)

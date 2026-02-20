@@ -83,6 +83,8 @@ func hasProvider(cfg *Config) bool {
 		cfg.Providers.OpenRouter,
 		cfg.Providers.Bedrock,
 		cfg.Providers.Vertex,
+		cfg.Providers.Gemini,
+		cfg.Providers.Grok,
 	}
 	for _, p := range providers {
 		if p != nil && len(p.Models) > 0 {

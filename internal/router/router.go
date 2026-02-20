@@ -55,6 +55,8 @@ func NewRouter(cfg *config.Config, health HealthChecker) *Router {
 	addProvider("openrouter", cfg.Providers.OpenRouter)
 	addProvider("bedrock", cfg.Providers.Bedrock)
 	addProvider("vertex", cfg.Providers.Vertex)
+	addProvider("gemini", cfg.Providers.Gemini)
+	addProvider("grok", cfg.Providers.Grok)
 
 	return &Router{
 		models:   models,

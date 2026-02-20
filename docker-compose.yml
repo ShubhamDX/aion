@@ -1,0 +1,21 @@
+services:
+  aion:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/aion.yaml:/app/configs/aion.yaml:ro
+      - aion-data:/app/data
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  aion-data:

@@ -2,10 +2,21 @@ package classifier
 
 import (
 	"math"
+	"regexp"
 	"strings"
 
 	"github.com/ShubhamDX/aion/internal/types"
 )
+
+// systemReminderRe matches <system-reminder>...</system-reminder> blocks
+// injected by clients like Claude Code into user messages.
+var systemReminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+
+// stripSystemReminders removes all <system-reminder> blocks from content
+// and trims the result.
+func stripSystemReminders(s string) string {
+	return strings.TrimSpace(systemReminderRe.ReplaceAllString(s, ""))
+}
 
 // makeIntentSignal returns an intentSignal function. If a trained model is
 // provided the base intent score comes from the model; otherwise it falls back
@@ -28,25 +39,39 @@ func intentSignalWithModel(req *types.ChatCompletionRequest, model *IntentModel)
 		return 0.0
 	}
 
-	var sb strings.Builder
-	for _, msg := range req.Messages {
-		if strings.ToLower(msg.Role) == "user" {
-			sb.WriteString(msg.ContentString())
-			sb.WriteByte(' ')
+	// Use only the last user message — earlier user messages may contain
+	// tool results or prior context that doesn't reflect current complexity.
+	var content string
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if strings.ToLower(req.Messages[i].Role) == "user" {
+			content = strings.TrimSpace(req.Messages[i].ContentString())
+			break
 		}
 	}
-	content := strings.TrimSpace(sb.String())
+
+	// Strip <system-reminder>...</system-reminder> tags injected by clients
+	// like Claude Code — these are scaffolding, not user intent.
+	content = stripSystemReminders(content)
 	if content == "" {
 		return 0.0
 	}
 
 	lower := strings.ToLower(content)
 
+	// Short messages (< 20 chars) are almost always simple — greetings,
+	// quick questions, etc. Cap the score to avoid misclassification by
+	// the ML model on out-of-distribution short inputs.
+	shortMessage := len(content) < 20
+
 	var baseScore float64
 	if model != nil {
 		baseScore = model.Predict(content)
 	} else {
 		baseScore = detectPrimaryIntent(lower)
+	}
+
+	if shortMessage && baseScore > 0.2 {
+		baseScore = 0.2
 	}
 	taskBonus := countDistinctTasks(lower)
 	conditionalBonus, enumerationBonus := detectStructuralComplexity(lower)

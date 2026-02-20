@@ -59,12 +59,12 @@ func New(cfg config.ClassifierConfig) *Classifier {
 
 	return &Classifier{
 		signals: []WeightedSignal{
-			{"token_volume", 0.15, tokenVolumeSignal},
+			{"token_volume", 0.10, tokenVolumeSignal},
 			{"message_count", 0.05, messageCountSignal},
-			{"system_prompt", 0.10, systemPromptSignal},
-			{"tool_presence", 0.10, toolPresenceSignal},
-			{"content_keywords", 0.15, contentKeywordsSignal},
-			{"intent", 0.30, makeIntentSignal(intentModel)},
+			{"system_prompt", 0.05, systemPromptSignal},
+			{"tool_presence", 0.05, toolPresenceSignal},
+			{"content_keywords", 0.25, contentKeywordsSignal},
+			{"intent", 0.35, makeIntentSignal(intentModel)},
 			{"user_hints", 0.15, userHintsSignal},
 		},
 		t1Threshold: cfg.Tier1Threshold,

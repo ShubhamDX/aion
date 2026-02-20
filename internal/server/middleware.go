@@ -93,7 +93,7 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, x-api-key, anthropic-version")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -142,7 +142,17 @@ func AuthMiddleware(validator *apikey.Validator) func(http.Handler) http.Handler
 				return
 			}
 
+			// Health endpoint bypasses auth.
+			if r.URL.Path == "/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			token := apikey.ExtractBearerToken(r.Header.Get("Authorization"))
+			if token == "" {
+				// Fallback: Anthropic-style x-api-key header.
+				token = r.Header.Get("x-api-key")
+			}
 			if token == "" {
 				writeAuthError(w, "missing or invalid Authorization header")
 				return

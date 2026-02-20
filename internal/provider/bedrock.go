@@ -1,14 +1,16 @@
 package provider
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/types"
@@ -28,7 +30,7 @@ type bedrockRequest struct {
 	Messages         []anthropicMsg  `json:"messages"`
 	System           string          `json:"system,omitempty"`
 	MaxTokens        int             `json:"max_tokens"`
-	Stream           bool            `json:"stream,omitempty"`
+	Stream           bool            `json:"-"`
 	Tools            []anthropicTool `json:"tools,omitempty"`
 	Temperature      *float64        `json:"temperature,omitempty"`
 	TopP             *float64        `json:"top_p,omitempty"`
@@ -137,8 +139,8 @@ func (p *BedrockProvider) SendStream(ctx context.Context, req *types.ChatComplet
 		return nil, fmt.Errorf("bedrock: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return &anthropicStreamReader{
-		reader: bufio.NewReader(resp.Body),
+	return &bedrockStreamReader{
+		reader: resp.Body,
 		body:   resp.Body,
 	}, nil
 }
@@ -182,4 +184,208 @@ func (p *BedrockProvider) translateRequest(req *types.ChatCompletionRequest, str
 func (p *BedrockProvider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.bearerToken)
+}
+
+// ---------- Bedrock streaming (AWS Event Stream binary format) ----------
+
+// bedrockEventPayload wraps the base64-encoded Anthropic event in each Bedrock chunk.
+type bedrockEventPayload struct {
+	Bytes string `json:"bytes"`
+}
+
+// bedrockStreamReader reads AWS Event Stream binary frames from Bedrock's
+// invoke-with-response-stream endpoint and translates them to OpenAI-compatible chunks.
+type bedrockStreamReader struct {
+	reader io.Reader
+	body   io.ReadCloser
+	id     string
+	model  string
+}
+
+// ReadChunk reads the next event from the Bedrock binary stream and translates
+// it to an OpenAI-compatible ChatCompletionChunk.
+func (s *bedrockStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) {
+	for {
+		headers, payload, err := s.readFrame()
+		if err != nil {
+			if err == io.EOF {
+				return nil, io.EOF
+			}
+			return nil, fmt.Errorf("bedrock stream: %w", err)
+		}
+
+		msgType := headers[":message-type"]
+		if msgType == "exception" {
+			exType := headers[":exception-type"]
+			return nil, fmt.Errorf("bedrock stream: exception %s: %s", exType, string(payload))
+		}
+
+		if msgType != "event" {
+			continue
+		}
+
+		if headers[":event-type"] != "chunk" {
+			continue
+		}
+
+		// Parse {"bytes":"..."} wrapper.
+		var ep bedrockEventPayload
+		if err := json.Unmarshal(payload, &ep); err != nil {
+			return nil, fmt.Errorf("bedrock stream: unmarshal payload: %w", err)
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(ep.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("bedrock stream: base64 decode: %w", err)
+		}
+
+		// Parse the Anthropic streaming event.
+		var evt anthropicStreamEvent
+		if err := json.Unmarshal(decoded, &evt); err != nil {
+			return nil, fmt.Errorf("bedrock stream: unmarshal event: %w", err)
+		}
+
+		chunk, done := s.translateEvent(&evt)
+		if done {
+			return nil, io.EOF
+		}
+		if chunk != nil {
+			return chunk, nil
+		}
+	}
+}
+
+func (s *bedrockStreamReader) translateEvent(evt *anthropicStreamEvent) (chunk *types.ChatCompletionChunk, done bool) {
+	switch evt.Type {
+	case "message_start":
+		if evt.Message != nil {
+			s.id = evt.Message.ID
+			s.model = evt.Message.Model
+		}
+		role := "assistant"
+		return &types.ChatCompletionChunk{
+			ID:      s.id,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   s.model,
+			Choices: []types.ChunkChoice{
+				{
+					Index: 0,
+					Delta: types.ChunkDelta{Role: role},
+				},
+			},
+		}, false
+
+	case "content_block_delta":
+		var delta anthropicDelta
+		if err := json.Unmarshal(evt.Delta, &delta); err != nil {
+			return nil, false
+		}
+		content := delta.Text
+		return &types.ChatCompletionChunk{
+			ID:      s.id,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   s.model,
+			Choices: []types.ChunkChoice{
+				{
+					Index: 0,
+					Delta: types.ChunkDelta{Content: &content},
+				},
+			},
+		}, false
+
+	case "message_delta":
+		var delta anthropicDelta
+		if err := json.Unmarshal(evt.Delta, &delta); err != nil {
+			return nil, false
+		}
+		finishReason := mapAnthropicStopReason(delta.StopReason)
+		return &types.ChatCompletionChunk{
+			ID:      s.id,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   s.model,
+			Choices: []types.ChunkChoice{
+				{
+					Index:        0,
+					Delta:        types.ChunkDelta{},
+					FinishReason: &finishReason,
+				},
+			},
+		}, false
+
+	case "message_stop":
+		return nil, true
+
+	default:
+		return nil, false
+	}
+}
+
+// readFrame reads a single AWS Event Stream binary frame.
+// Frame layout: [total_len:4][headers_len:4][prelude_crc:4][headers:*][payload:*][msg_crc:4]
+func (s *bedrockStreamReader) readFrame() (headers map[string]string, payload []byte, err error) {
+	// Read 12-byte prelude.
+	prelude := make([]byte, 12)
+	if _, err := io.ReadFull(s.reader, prelude); err != nil {
+		return nil, nil, err
+	}
+
+	totalLen := binary.BigEndian.Uint32(prelude[0:4])
+	headersLen := binary.BigEndian.Uint32(prelude[4:8])
+
+	// Read the rest: headers + payload + 4-byte message CRC.
+	remaining := make([]byte, totalLen-12)
+	if _, err := io.ReadFull(s.reader, remaining); err != nil {
+		return nil, nil, err
+	}
+
+	// Parse headers.
+	headerBytes := remaining[:headersLen]
+	headers = make(map[string]string)
+	for len(headerBytes) > 0 {
+		if len(headerBytes) < 1 {
+			break
+		}
+		nameLen := int(headerBytes[0])
+		headerBytes = headerBytes[1:]
+		if len(headerBytes) < nameLen {
+			break
+		}
+		name := string(headerBytes[:nameLen])
+		headerBytes = headerBytes[nameLen:]
+
+		if len(headerBytes) < 1 {
+			break
+		}
+		valueType := headerBytes[0]
+		headerBytes = headerBytes[1:]
+
+		if valueType == 7 { // string type
+			if len(headerBytes) < 2 {
+				break
+			}
+			valueLen := int(binary.BigEndian.Uint16(headerBytes[:2]))
+			headerBytes = headerBytes[2:]
+			if len(headerBytes) < valueLen {
+				break
+			}
+			headers[name] = string(headerBytes[:valueLen])
+			headerBytes = headerBytes[valueLen:]
+		}
+	}
+
+	// Payload sits between headers and the 4-byte message CRC at the end.
+	payloadLen := int(totalLen) - 12 - int(headersLen) - 4
+	if payloadLen > 0 {
+		payload = remaining[headersLen : headersLen+uint32(payloadLen)]
+	}
+
+	return headers, payload, nil
+}
+
+// Close closes the underlying response body.
+func (s *bedrockStreamReader) Close() error {
+	return s.body.Close()
 }

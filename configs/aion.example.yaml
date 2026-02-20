@@ -97,6 +97,32 @@ providers:
   #       input_price_per_1m: 15.00
   #       output_price_per_1m: 75.00
 
+  # gemini:
+  #   api_key: "${GEMINI_API_KEY}"
+  #   # base_url: "https://generativelanguage.googleapis.com/v1beta/openai"  # default
+  #   models:
+  #     - id: "gemini-2.0-flash"
+  #       tier: 1
+  #       input_price_per_1m: 0.10
+  #       output_price_per_1m: 0.40
+  #     - id: "gemini-2.0-pro"
+  #       tier: 2
+  #       input_price_per_1m: 1.25
+  #       output_price_per_1m: 10.00
+
+  # grok:
+  #   api_key: "${XAI_API_KEY}"
+  #   # base_url: "https://api.x.ai/v1"  # default
+  #   models:
+  #     - id: "grok-3-mini"
+  #       tier: 1
+  #       input_price_per_1m: 0.30
+  #       output_price_per_1m: 0.50
+  #     - id: "grok-3"
+  #       tier: 3
+  #       input_price_per_1m: 3.00
+  #       output_price_per_1m: 15.00
+
 routing:
   strategy: "cheapest"  # Options: cheapest, fallback
   classifier:

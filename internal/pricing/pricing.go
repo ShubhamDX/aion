@@ -42,6 +42,8 @@ func NewTable(providers config.ProvidersConfig) *Table {
 	addModels("openrouter", providers.OpenRouter)
 	addModels("bedrock", providers.Bedrock)
 	addModels("vertex", providers.Vertex)
+	addModels("gemini", providers.Gemini)
+	addModels("grok", providers.Grok)
 
 	return &Table{prices: prices}
 }

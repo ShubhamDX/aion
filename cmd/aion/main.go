@@ -79,6 +79,12 @@ func main() {
 	if cfg.Providers.Vertex != nil {
 		registry.Register(provider.NewVertex(cfg.Providers.Vertex))
 	}
+	if cfg.Providers.Gemini != nil {
+		registry.Register(provider.NewGemini(cfg.Providers.Gemini))
+	}
+	if cfg.Providers.Grok != nil {
+		registry.Register(provider.NewGrok(cfg.Providers.Grok))
+	}
 
 	// Build classifier.
 	cls := classifier.New(cfg.Routing.Classifier)
@@ -94,12 +100,13 @@ func main() {
 
 	// Build route handlers.
 	handlers := server.RouteHandlers{
-		ChatCompletion: proxyHandler.ChatCompletion,
-		ListModels:     listModelsHandler(cfg),
-		Health:         healthHandler(),
-		MetricsSavings: metricsHandler(store, "savings"),
-		MetricsRouting: metricsHandler(store, "routing"),
-		MetricsCosts:   metricsHandler(store, "costs"),
+		ChatCompletion:    proxyHandler.ChatCompletion,
+		AnthropicMessages: proxyHandler.AnthropicMessages,
+		ListModels:        listModelsHandler(cfg),
+		Health:            healthHandler(),
+		MetricsSavings:    metricsHandler(store, "savings"),
+		MetricsRouting:    metricsHandler(store, "routing"),
+		MetricsCosts:      metricsHandler(store, "costs"),
 	}
 
 	// Build router (HTTP mux).
@@ -218,6 +225,8 @@ func listModelsHandler(cfg *config.Config) http.HandlerFunc {
 	addModels("openrouter", cfg.Providers.OpenRouter)
 	addModels("bedrock", cfg.Providers.Bedrock)
 	addModels("vertex", cfg.Providers.Vertex)
+	addModels("gemini", cfg.Providers.Gemini)
+	addModels("grok", cfg.Providers.Grok)
 
 	resp := types.ModelListResponse{
 		Object: "list",

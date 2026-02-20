@@ -10,15 +10,19 @@ import (
 // SignalFunc extracts a complexity signal from a request, returning 0.0-1.0.
 type SignalFunc func(req *types.ChatCompletionRequest) float64
 
-// tokenVolumeSignal estimates token count as total content length / 4
-// and scores it against a 4000-token reference.
-// Weight: 0.20
+// tokenVolumeSignal estimates token count from non-system user/assistant
+// messages (excluding the constant system prompt scaffolding) and scores
+// against a 4000-token reference.
+// Weight: 0.15
 func tokenVolumeSignal(req *types.ChatCompletionRequest) float64 {
 	if req == nil {
 		return 0.0
 	}
 	totalChars := 0
 	for _, msg := range req.Messages {
+		if strings.ToLower(msg.Role) == "system" {
+			continue
+		}
 		totalChars += len(msg.ContentString())
 	}
 	estimatedTokens := float64(totalChars) / 4.0
@@ -34,8 +38,10 @@ func messageCountSignal(req *types.ChatCompletionRequest) float64 {
 	return math.Min(1.0, float64(len(req.Messages))/20.0)
 }
 
-// systemPromptSignal evaluates the system message for length and complexity keywords.
-// Weight: 0.15
+// systemPromptSignal evaluates the system message for complexity keywords only
+// (not length). Many clients like Claude Code send large constant system
+// prompts with every request — scoring by length would always push to Tier 3.
+// Weight: 0.10
 func systemPromptSignal(req *types.ChatCompletionRequest) float64 {
 	if req == nil {
 		return 0.0
@@ -54,47 +60,49 @@ func systemPromptSignal(req *types.ChatCompletionRequest) float64 {
 	}
 
 	lower := strings.ToLower(systemContent)
-	lengthScore := math.Min(1.0, float64(len(systemContent))/2000.0)
 
-	keywords := []string{"analyze", "reason", "step-by-step", "chain of thought", "expert", "detailed"}
+	// Only score on strong complexity keywords, not length.
+	keywords := []string{"step-by-step", "chain of thought", "formal proof", "mathematical"}
 	matchCount := 0
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
 			matchCount++
 		}
 	}
-	keywordBonus := math.Min(1.0, float64(matchCount)/float64(len(keywords)))
 
-	score := lengthScore*0.6 + keywordBonus*0.4
-	return math.Min(1.0, score)
+	return math.Min(1.0, float64(matchCount)*0.3)
 }
 
-// toolPresenceSignal scores the number of tools against a 5-tool reference.
-// Weight: 0.15
+// toolPresenceSignal gives a small bump when tools are present but doesn't
+// scale linearly — many clients (Claude Code, Cursor) always send 10-30
+// tools as scaffolding. A binary "tools present" signal is more useful.
+// Weight: 0.10
 func toolPresenceSignal(req *types.ChatCompletionRequest) float64 {
-	if req == nil {
+	if req == nil || len(req.Tools) == 0 {
 		return 0.0
 	}
-	return math.Min(1.0, float64(len(req.Tools))/5.0)
+	return 0.3
 }
 
-// contentKeywordsSignal checks all user messages for complexity indicators.
+// contentKeywordsSignal checks the last user message for complexity indicators.
+// Only the last user message is used because earlier messages may contain
+// tool results, structured data, or other non-indicative content.
 // Weight: 0.25
 func contentKeywordsSignal(req *types.ChatCompletionRequest) float64 {
 	if req == nil {
 		return 0.0
 	}
 
-	// Concatenate all user messages for keyword analysis.
-	var sb strings.Builder
-	for _, msg := range req.Messages {
-		if strings.ToLower(msg.Role) == "user" {
-			sb.WriteString(msg.ContentString())
-			sb.WriteByte(' ')
+	// Use only the last user message for keyword analysis, stripping
+	// <system-reminder> tags injected by clients like Claude Code.
+	var content string
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if strings.ToLower(req.Messages[i].Role) == "user" {
+			content = stripSystemReminders(req.Messages[i].ContentString())
+			break
 		}
 	}
 
-	content := sb.String()
 	if content == "" {
 		return 0.0
 	}
