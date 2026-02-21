@@ -919,3 +919,986 @@ func pct(part, total int) float64 {
 	}
 	return float64(part) / float64(total) * 100
 }
+
+// --- 200-Step Autonomous Coding Session Benchmark ---
+
+// sessionStep represents a single step in a simulated autonomous coding session.
+type sessionStep struct {
+	phase    string // phase of the session (e.g., "planning", "scaffolding", "implementation")
+	action   string // what the agent is doing
+	messages []types.Message
+	tools    []types.Tool
+}
+
+// buildCodingSession generates a realistic 200-step autonomous coding session
+// that simulates an agentic tool (like Claude Code) building a feature end-to-end.
+// The session follows a natural arc: planning -> scaffolding -> implementation ->
+// debugging -> testing -> refactoring -> cleanup.
+func buildCodingSession(rng *rand.Rand) []sessionStep {
+	var steps []sessionStep
+
+	// Shared assistant context for confirmation escalation scenarios.
+	complexPlan := "Here's my implementation plan:\n\n" +
+		"Step 1: Create the service interface and types\n" +
+		"Step 2: Implement the core business logic\n" +
+		"Step 3: Add the HTTP handlers with middleware\n" +
+		"Step 4: Write database migrations\n" +
+		"Step 5: Add integration tests\n\n" +
+		"```go\ntype OrderService struct {\n\tdb     *pgxpool.Pool\n\tcache  *redis.Client\n\tnotify *NotificationService\n}\n```\n\n" +
+		"```go\nfunc (s *OrderService) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order, error) {\n\t// validation, idempotency check, saga coordination\n}\n```\n\nShall I proceed?"
+
+	debugAnalysis := "I found the issue. The race condition is in the cache invalidation path:\n\n" +
+		"```go\n// BUG: read and delete are not atomic\nif val, ok := cache.Get(key); ok {\n\tprocess(val)\n\tcache.Delete(key)  // another goroutine can Get() between these lines\n}\n```\n\n" +
+		"The fix is to use a compare-and-delete operation or hold a lock. I'll implement the lock-free version using atomic CAS.\n\nWant me to make the fix?"
+
+	refactorProposal := "I'll refactor the handler package:\n\n" +
+		"1. Extract shared middleware into a chain\n" +
+		"2. Standardize error responses with error codes\n" +
+		"3. Add request/response logging middleware\n" +
+		"4. Implement graceful shutdown\n\n" +
+		"```go\nfunc NewRouter(svc *Service, opts ...RouterOption) http.Handler {\n\tr := chi.NewRouter()\n\tr.Use(RequestID, Logger, Recoverer)\n\tr.Route(\"/api/v1\", func(r chi.Router) {\n\t\tr.Use(Auth)\n\t\tr.Mount(\"/orders\", orderRoutes(svc))\n\t})\n\treturn r\n}\n```\n\nReady to start?"
+
+	testPlan := "I'll add the missing test coverage:\n\n" +
+		"1. Unit tests for the service layer (mock DB)\n" +
+		"2. Integration tests with testcontainers\n" +
+		"3. Edge cases: concurrent orders, idempotency, timeout handling\n\n" +
+		"```go\nfunc TestCreateOrder_Concurrent(t *testing.T) {\n\t// spin up 100 goroutines creating orders\n}\n```\n\n" +
+		"```go\nfunc TestCreateOrder_Idempotent(t *testing.T) {\n\t// same idempotency key should return same order\n}\n```\n\nShall I write these?"
+
+	confirmations := []string{
+		"do it", "yes", "go ahead", "proceed", "sure", "ok",
+		"yes please", "go for it", "sounds good", "let's do it",
+		"ship it", "lgtm", "implement it", "yep", "continue",
+	}
+
+	// --- Phase 1: Planning (steps 1-15) ---
+	planningSteps := []sessionStep{
+		{phase: "planning", action: "greeting", messages: []types.Message{
+			{Role: "user", Content: rawB("I need to build an order management service")},
+		}},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the current project structure")},
+		}, tools: ideTools},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show me the existing database schema")},
+		}, tools: ideTools},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read internal/config/config.go")},
+		}, tools: ideTools},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("what's in the go.mod")},
+		}, tools: ideTools},
+		{phase: "planning", action: "architecture", messages: []types.Message{
+			{Role: "system", Content: rawB("You are an expert software architect. Think step-by-step about system design. Consider scalability, reliability, and performance tradeoffs.")},
+			{Role: "user", Content: rawB("design the order service architecture. It needs to handle 10K orders/sec with idempotency, saga-based distributed transactions, and real-time notifications. Evaluate the tradeoffs between event sourcing vs state-based persistence.")},
+		}, tools: ideTools},
+		{phase: "planning", action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("design the order service architecture")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the existing handler patterns in internal/proxy/handler.go")},
+		}, tools: ideTools},
+		{phase: "planning", action: "explanation", messages: []types.Message{
+			{Role: "user", Content: rawB("explain how the existing middleware chain works")},
+		}},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show me the test patterns used in this project")},
+		}, tools: ideTools},
+		{phase: "planning", action: "factual", messages: []types.Message{
+			{Role: "user", Content: rawB("what version of Go are we using")},
+		}},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("list files in internal/types/")},
+		}, tools: ideTools},
+		{phase: "planning", action: "explanation", messages: []types.Message{
+			{Role: "user", Content: rawB("what does the router package do")},
+		}},
+		{phase: "planning", action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the Makefile")},
+		}, tools: ideTools},
+		{phase: "planning", action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("plan the migration architecture")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+	}
+	steps = append(steps, planningSteps...)
+
+	// --- Phase 2: Scaffolding (steps 16-45) ---
+	scaffoldActions := []sessionStep{
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("create the directory structure: internal/order/")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("create the order types file with Order, CreateOrderRequest, OrderStatus")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the Order service interface with Create, Get, List, and Cancel methods. Include proper error types and context propagation.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the order routes to the main router")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the HTTP handler for CreateOrder with input validation, error handling, and proper HTTP status codes")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the missing import for context package")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the compilation error - missing return statement")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the GetOrder and ListOrders handlers with pagination support and proper error responses")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add json tags to the Order struct")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("implement the handlers")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("rename the variable from 'res' to 'response'")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the database repository layer for orders with connection pooling, prepared statements, and proper transaction handling")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("create the SQL migration file for the orders table")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the index on order_status column")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the current state of internal/order/service.go")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the unused import warning")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the CancelOrder handler with idempotency check and state machine validation")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add a constant for the max page size")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the handler file again")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the typo in the error message on line 87")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("write the database layer")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the notification service integration with retry logic and dead letter queue for failed deliveries")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the config struct for notification settings")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("export the NotificationConfig type")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the current go.sum to check dependencies")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run go mod tidy")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("add the notification integration")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the new config fields to the example yaml")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show configs/aion.example.yaml")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("update the import path")},
+		}, tools: ideTools},
+	}
+	for i := range scaffoldActions {
+		scaffoldActions[i].phase = "scaffolding"
+	}
+	steps = append(steps, scaffoldActions...)
+
+	// --- Phase 3: Core Implementation (steps 46-95) ---
+	implActions := []sessionStep{
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the saga coordinator for distributed order creation. It should handle: payment charge, inventory reservation, and shipping label creation with compensating transactions on failure.")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("implement the saga coordinator")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the compilation error on line 134")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the missing error return")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the saga coordinator code")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the idempotency middleware that stores request hashes and returns cached responses for duplicate requests")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the idempotency key header constant")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix: the hash function should use sha256 not md5")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the order state machine with transitions: pending -> confirmed -> processing -> shipped -> delivered, and pending -> cancelled. Validate transitions and emit events.")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("implement the state machine")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the Shipped status constant")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the switch statement - missing default case")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the state machine file")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the event publisher that emits order lifecycle events to a channel with buffering and backpressure handling")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("increase the channel buffer size to 1000")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add a Close method to the publisher")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show internal/order/repository.go")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the PostgreSQL repository for orders with optimistic locking using version columns, batch inserts, and query builder for the list endpoint filters")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("implement the repository")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the SQL syntax error - missing comma")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the version column to the INSERT statement")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("use $1 parameter placeholders instead of string interpolation")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the cache layer for orders using Redis with TTL, cache-aside pattern, and batch invalidation on writes")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("set the default TTL to 5 minutes")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the JSON marshaling for the cached order")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the cache implementation")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("write the cache layer")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the cache config to the service constructor")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("remove the debug log statement")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the rate limiter middleware using token bucket algorithm with per-user and global limits, configurable via the YAML config")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add rate limit headers to the response")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix: return 429 status code not 503")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement structured logging for the order service with correlation IDs, request tracing, and log levels configurable per package")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the correlation ID to the context")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("rename the logger field from 'l' to 'logger'")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the current state of main.go")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("wire up the order service in main.go")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the graceful shutdown handler")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("wire everything together")},
+			{Role: "assistant", Content: rawB(complexPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the nil pointer - initialize the logger before using it")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("go build ./...")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the remaining compilation errors")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the missing method to satisfy the interface")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run go vet ./...")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the go vet warning about printf format")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the compilation output")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the missing comma in struct literal")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("it compiles now, run it")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run golangci-lint ./...")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the lint warnings")},
+		}, tools: ideTools},
+	}
+	for i := range implActions {
+		implActions[i].phase = "implementation"
+	}
+	steps = append(steps, implActions...)
+
+	// --- Phase 4: Debugging (steps 96-130) ---
+	debugActions := []sessionStep{
+		{action: "debug", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant helping debug issues.")},
+			{Role: "user", Content: rawB("the order creation is failing with a deadlock error. Here's the stack trace:\n```\nfatal error: all goroutines are asleep - deadlock!\ngoroutine 1 [chan receive]:\nmain.(*OrderService).Create()\n\t/app/internal/order/service.go:55\n```\nDebug this and find the root cause.")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show service.go around line 55")},
+		}, tools: ideTools},
+		{action: "debug", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant helping debug issues.")},
+			{Role: "user", Content: rawB("getting a race condition in the cache layer. The test fails with -race flag:\n```\nWARNING: DATA RACE\nWrite at 0x00c0001a4000 by goroutine 7:\n  order.(*CacheLayer).Set()\nRead at 0x00c0001a4000 by goroutine 8:\n  order.(*CacheLayer).Get()\n```\nDebug and fix the race condition.")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("debug the race condition")},
+			{Role: "assistant", Content: rawB(debugAnalysis)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the mutex lock to the cache Get method")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("use RWMutex instead of Mutex for better read concurrency")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the fixed cache code")},
+		}, tools: ideTools},
+		{action: "debug", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant helping debug issues.")},
+			{Role: "user", Content: rawB("the saga coordinator is not rolling back properly when the payment step fails. The inventory reservation stays committed. Debug the compensating transaction logic and fix it.")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the saga rollback")},
+			{Role: "assistant", Content: rawB(debugAnalysis)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the defer rollback call")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the error wrapping - use fmt.Errorf with %w")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the saga coordinator after the fix")},
+		}, tools: ideTools},
+		{action: "debug", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant helping debug issues.")},
+			{Role: "user", Content: rawB("the optimistic locking in the repository is not working. Concurrent updates both succeed instead of one failing with a version conflict. Debug the SQL query and the version check logic.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add WHERE version = $2 to the UPDATE query")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("check rows affected and return conflict error if zero")},
+		}, tools: ideTools},
+		{action: "debug", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant helping debug issues.")},
+			{Role: "user", Content: rawB("the rate limiter is blocking all requests after restart because the token bucket state is lost. Debug why the Redis state isn't being loaded on startup.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("initialize the bucket from Redis on first request")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("read the rate limiter code")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add a sync.Once for the initialization")},
+		}, tools: ideTools},
+		{action: "debug", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant helping debug issues.")},
+			{Role: "user", Content: rawB("the notification service goroutine is leaking. After 100 orders, the goroutine count keeps growing. Profile output shows the goroutines are stuck in the send channel. Debug the goroutine leak.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add context cancellation to the notification sender loop")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add a timeout to the channel send with select")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the notification publisher code")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the goroutine leak")},
+			{Role: "assistant", Content: rawB(debugAnalysis)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run the tests again to verify the fix")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run go test -race ./internal/order/...")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("ok looks good")},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("clean up the debug print statements")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run the linter again")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the remaining lint warning")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the test output")},
+		}, tools: ideTools},
+		{action: "factual", messages: []types.Message{
+			{Role: "user", Content: rawB("what flags does go test -race use")},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("all tests pass now, nice")},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("commit the debugging fixes")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("git add -A && git commit -m 'fix: race conditions and goroutine leaks'")},
+		}, tools: ideTools},
+	}
+	for i := range debugActions {
+		debugActions[i].phase = "debugging"
+	}
+	steps = append(steps, debugActions...)
+
+	// --- Phase 5: Testing (steps 131-165) ---
+	testActions := []sessionStep{
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement unit tests for the OrderService.Create method. Cover: happy path, validation errors, duplicate idempotency key, database errors, and saga rollback scenarios.")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("write the test suite")},
+			{Role: "assistant", Content: rawB(testPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the mock for the repository interface")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the test helper - wrong expected status")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement integration tests using testcontainers for PostgreSQL and Redis. Test the full order creation flow including cache and persistence.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the testcontainers dependency")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the container cleanup in TestMain")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the test output")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run go test -v ./internal/order/...")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the failing test - expected 201 got 200")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement the concurrent order creation test. Spin up 50 goroutines creating orders simultaneously and verify no races or duplicates.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add WaitGroup to the concurrent test")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix: use t.Parallel() for the subtests")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement table-driven tests for the order state machine transitions. Test all valid and invalid transitions with descriptive error messages.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the Delivered -> Cancelled invalid transition case")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run all tests")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show test coverage")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run go test -cover ./internal/order/...")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("implement benchmark tests for the hot paths: CreateOrder, GetOrder, and cache hits vs misses. Use b.ReportAllocs() and compare performance.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run the benchmarks")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the benchmark setup - use b.ResetTimer after setup")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("add test coverage for edge cases")},
+			{Role: "assistant", Content: rawB(testPlan)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the test for nil context handling")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the test for empty order items")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("all tests pass, commit")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("git add -A && git commit -m 'test: comprehensive order service test suite'")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the final test count")},
+		}, tools: ideTools},
+		{action: "factual", messages: []types.Message{
+			{Role: "user", Content: rawB("what's a good code coverage target")},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("coverage is at 87%, that's good enough")},
+		}},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run go vet one more time")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the vet warning about unreachable code")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run staticcheck ./...")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the staticcheck finding about deprecated function")},
+		}, tools: ideTools},
+	}
+	for i := range testActions {
+		testActions[i].phase = "testing"
+	}
+	steps = append(steps, testActions...)
+
+	// --- Phase 6: Refactoring & Cleanup (steps 166-200) ---
+	refactorActions := []sessionStep{
+		{action: "review", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a senior code reviewer. Analyze code for bugs, performance issues, and best practices.")},
+			{Role: "user", Content: rawB("review the entire order service implementation. Check for:\n- Error handling consistency\n- Resource leaks\n- Concurrency safety\n- SQL injection risks\n- Missing input validation\n\nProvide a prioritized list of issues.")},
+		}, tools: ideTools},
+		{action: "confirmation", messages: []types.Message{
+			{Role: "user", Content: rawB("refactor the handler package")},
+			{Role: "assistant", Content: rawB(refactorProposal)},
+			{Role: "user", Content: rawB(confirmations[rng.Intn(len(confirmations))])},
+		}},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("refactor the error handling to use a centralized error type with error codes, HTTP status mapping, and user-friendly messages. Replace all the ad-hoc error returns.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("rename ErrNotFound to ErrOrderNotFound for clarity")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the error code constants")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the error message formatting")},
+		}, tools: ideTools},
+		{action: "code_gen", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a coding assistant. Help the user write clean, idiomatic code.")},
+			{Role: "user", Content: rawB("extract the common middleware chain into a shared package. Implement RequestID, Logger, Recoverer, and CORS middleware as composable functions.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("move the middleware to internal/middleware/")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("update the import paths after the move")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the circular import - extract the interface")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the middleware package")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add godoc comments to the exported functions")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run the tests after refactoring")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the broken test - update the mock")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run the full test suite: go test ./...")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("all passing, run the linter")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("fix the two remaining lint warnings")},
+		}, tools: ideTools},
+		{action: "analysis", messages: []types.Message{
+			{Role: "system", Content: rawB("You are a senior engineer. Analyze step-by-step and provide detailed reasoning for your conclusions.")},
+			{Role: "user", Content: rawB("analyze the order service for production readiness. Evaluate: error handling completeness, graceful shutdown behavior, health check endpoints, metrics exposure, and configuration validation. Identify any gaps.")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the health check endpoint")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the Prometheus metrics endpoint")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add config validation in the init function")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("update the Dockerfile to include the new config")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("update the README with the new endpoints")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("final go build to make sure everything compiles")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("run all tests one last time")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("commit everything")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("git add -A && git commit -m 'feat: order management service'")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("update the CHANGELOG")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("bump the version to v0.2.0")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("update the docker-compose.yml with the new service")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("add the environment variables to .env.example")},
+		}, tools: ideTools},
+		{action: "file_read", messages: []types.Message{
+			{Role: "user", Content: rawB("show the final git log")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("squash the last 3 commits")},
+		}, tools: ideTools},
+		{action: "simple_code", messages: []types.Message{
+			{Role: "user", Content: rawB("push to the feature branch")},
+		}, tools: ideTools},
+		{action: "factual", messages: []types.Message{
+			{Role: "user", Content: rawB("thanks, looks great")},
+		}},
+		{action: "factual", messages: []types.Message{
+			{Role: "user", Content: rawB("done")},
+		}},
+		{action: "factual", messages: []types.Message{
+			{Role: "user", Content: rawB("nice work")},
+		}},
+	}
+	for i := range refactorActions {
+		refactorActions[i].phase = "refactoring"
+	}
+	steps = append(steps, refactorActions...)
+
+	return steps
+}
+
+func TestBenchmarkAutonomousSession(t *testing.T) {
+	// Initialize classifier with real config + embedded ML model.
+	c := New(config.ClassifierConfig{
+		Tier1Threshold: 0.35,
+		Tier2Threshold: 0.70,
+	})
+
+	rng := rand.New(rand.NewSource(99))
+	session := buildCodingSession(rng)
+
+	t.Logf("Session length: %d steps", len(session))
+
+	// Classify each step.
+	type stepResult struct {
+		phase   string
+		action  string
+		tier    types.Tier
+		score   float64
+		signals map[string]float64
+	}
+
+	results := make([]stepResult, len(session))
+	for i, step := range session {
+		req := &types.ChatCompletionRequest{
+			Messages: step.messages,
+			Tools:    step.tools,
+		}
+		tier, score, signals := c.Classify(req)
+		results[i] = stepResult{
+			phase:   step.phase,
+			action:  step.action,
+			tier:    tier,
+			score:   score,
+			signals: signals,
+		}
+	}
+
+	// --- Aggregate by tier ---
+	tierCounts := map[types.Tier]int{types.Tier1: 0, types.Tier2: 0, types.Tier3: 0}
+	for _, r := range results {
+		tierCounts[r.tier]++
+	}
+
+	// --- Aggregate by phase ---
+	type phaseStats struct {
+		count      int
+		tier1      int
+		tier2      int
+		tier3      int
+		totalScore float64
+	}
+	phases := []string{"planning", "scaffolding", "implementation", "debugging", "testing", "refactoring"}
+	phaseData := make(map[string]*phaseStats)
+	for _, p := range phases {
+		phaseData[p] = &phaseStats{}
+	}
+	for _, r := range results {
+		ps := phaseData[r.phase]
+		ps.count++
+		ps.totalScore += r.score
+		switch r.tier {
+		case types.Tier1:
+			ps.tier1++
+		case types.Tier2:
+			ps.tier2++
+		case types.Tier3:
+			ps.tier3++
+		}
+	}
+
+	// --- Aggregate by action type ---
+	type actionStats struct {
+		count      int
+		tier1      int
+		tier2      int
+		tier3      int
+		totalScore float64
+	}
+	actionTypes := []string{
+		"file_read", "simple_code", "code_gen", "debug", "review",
+		"analysis", "architecture", "explanation", "confirmation",
+		"factual", "greeting",
+	}
+	actionData := make(map[string]*actionStats)
+	for _, a := range actionTypes {
+		actionData[a] = &actionStats{}
+	}
+	for _, r := range results {
+		as := actionData[r.action]
+		if as == nil {
+			actionData[r.action] = &actionStats{}
+			as = actionData[r.action]
+			actionTypes = append(actionTypes, r.action)
+		}
+		as.count++
+		as.totalScore += r.score
+		switch r.tier {
+		case types.Tier1:
+			as.tier1++
+		case types.Tier2:
+			as.tier2++
+		case types.Tier3:
+			as.tier3++
+		}
+	}
+
+	// --- Confirmation escalation ---
+	confirmTotal := 0
+	confirmEscalated := 0
+	for _, r := range results {
+		if r.action == "confirmation" {
+			confirmTotal++
+			if r.signals["confirmation_escalation"] > 0 {
+				confirmEscalated++
+			}
+		}
+	}
+
+	// --- Cost calculation ---
+	var aionCost float64
+	for tier, count := range tierCounts {
+		aionCost += float64(count) * costPerRequest(pricing[tier])
+	}
+	baselineCost := float64(len(session)) * costPerRequest(baselinePricing)
+	savings := baselineCost - aionCost
+	savingsPct := (savings / baselineCost) * 100
+
+	// Per-step costs for the report.
+	aionPerStep := aionCost / float64(len(session))
+	baselinePerStep := baselineCost / float64(len(session))
+
+	// Scale to a typical month of sessions.
+	// Assume 20 sessions/month (one per workday).
+	sessionsPerMonth := 20.0
+	aionMonthly := aionCost * sessionsPerMonth
+	baselineMonthly := baselineCost * sessionsPerMonth
+	savingsMonthly := baselineMonthly - aionMonthly
+
+	// --- Print report ---
+	totalSteps := len(session)
+	t.Logf("\n%s", strings.Repeat("=", 65))
+	t.Logf("  AION Autonomous Session Benchmark (%d steps)", totalSteps)
+	t.Logf("%s", strings.Repeat("=", 65))
+
+	t.Logf("\nScenario: Building an order management service end-to-end")
+	t.Logf("Phases: planning -> scaffolding -> implementation -> debug -> test -> refactor")
+
+	t.Logf("\nTier Distribution:")
+	t.Logf("  Tier 1 (simple):   %4d (%5.1f%%)", tierCounts[types.Tier1], pct(tierCounts[types.Tier1], totalSteps))
+	t.Logf("  Tier 2 (moderate): %4d (%5.1f%%)", tierCounts[types.Tier2], pct(tierCounts[types.Tier2], totalSteps))
+	t.Logf("  Tier 3 (complex):  %4d (%5.1f%%)", tierCounts[types.Tier3], pct(tierCounts[types.Tier3], totalSteps))
+
+	t.Logf("\nPhase Breakdown:")
+	t.Logf("  %-18s %5s %6s %6s %6s %9s", "Phase", "Steps", "Tier1", "Tier2", "Tier3", "Avg Score")
+	t.Logf("  %s", strings.Repeat("-", 55))
+	for _, phase := range phases {
+		ps := phaseData[phase]
+		avg := 0.0
+		if ps.count > 0 {
+			avg = ps.totalScore / float64(ps.count)
+		}
+		t.Logf("  %-18s %5d %6d %6d %6d %9.3f", phase, ps.count, ps.tier1, ps.tier2, ps.tier3, avg)
+	}
+
+	t.Logf("\nAction Type Breakdown:")
+	t.Logf("  %-18s %5s %6s %6s %6s %9s", "Action", "Count", "Tier1", "Tier2", "Tier3", "Avg Score")
+	t.Logf("  %s", strings.Repeat("-", 55))
+	for _, action := range actionTypes {
+		as := actionData[action]
+		if as.count == 0 {
+			continue
+		}
+		avg := as.totalScore / float64(as.count)
+		t.Logf("  %-18s %5d %6d %6d %6d %9.3f", action, as.count, as.tier1, as.tier2, as.tier3, avg)
+	}
+
+	t.Logf("\nConfirmation Escalation:")
+	t.Logf("  Total confirmations:  %d", confirmTotal)
+	t.Logf("  Escalated:            %d (%.1f%%)", confirmEscalated, pct(confirmEscalated, confirmTotal))
+	t.Logf("  Not escalated:        %d (%.1f%%)", confirmTotal-confirmEscalated, pct(confirmTotal-confirmEscalated, confirmTotal))
+
+	t.Logf("\nCost Analysis (this session, %d steps):", totalSteps)
+	t.Logf("  Baseline (Opus for all):  $%.4f", baselineCost)
+	t.Logf("  AION routed:              $%.4f", aionCost)
+	t.Logf("  Savings:                  $%.4f (%.1f%%)", savings, savingsPct)
+	t.Logf("  Per-step baseline:        $%.6f", baselinePerStep)
+	t.Logf("  Per-step AION:            $%.6f", aionPerStep)
+
+	t.Logf("\nProjected Monthly Impact (%.0f sessions/month):", sessionsPerMonth)
+	t.Logf("  Baseline:  $%.2f", baselineMonthly)
+	t.Logf("  AION:      $%.2f", aionMonthly)
+	t.Logf("  Savings:   $%.2f (%.1f%%)", savingsMonthly, savingsPct)
+
+	t.Logf("\nKey Insight:")
+	t.Logf("  In this %d-step session, %d steps (%.1f%%) were mechanically simple",
+		totalSteps, tierCounts[types.Tier1], pct(tierCounts[types.Tier1], totalSteps))
+	t.Logf("  (file reads, lint fixes, typo corrections, confirmations).")
+	t.Logf("  Without a router, ALL %d steps use Tier 3 pricing.", totalSteps)
+	t.Logf("  That is structural inefficiency in autonomous coding sessions.")
+
+	t.Logf("\n%s", strings.Repeat("=", 65))
+
+	// --- Sanity checks ---
+	if savingsPct < 20 {
+		t.Errorf("expected at least 20%% savings in session benchmark, got %.1f%%", savingsPct)
+	}
+	if tierCounts[types.Tier1] == 0 {
+		t.Errorf("no Tier 1 steps — classifier may be broken for simple actions")
+	}
+	if tierCounts[types.Tier2]+tierCounts[types.Tier3] == 0 {
+		t.Errorf("no Tier 2/3 steps — classifier may be under-routing complex actions")
+	}
+	if confirmEscalated == 0 {
+		t.Errorf("no confirmation escalations — escalation logic may be broken")
+	}
+	// Validate the session has a realistic mix: majority should be Tier 1.
+	tier1Pct := pct(tierCounts[types.Tier1], totalSteps)
+	if tier1Pct < 40 {
+		t.Errorf("expected at least 40%% Tier 1 steps in a realistic session, got %.1f%%", tier1Pct)
+	}
+}
