@@ -10,7 +10,7 @@ AION is a local proxy that classifies the complexity of each LLM request in <1ms
 
 Most agentic tools default to the most capable model for every request.
 
-In autonomous coding sessions, 70-85% of steps are mechanically simple -- file reads, lint fixes, small edits, "run the tests." Defaulting to Tier 3 pricing for all steps creates structural overspend.
+In autonomous coding sessions, 70-85% of steps were mechanically simple -- file reads, lint fixes, small edits, "run the tests." Defaulting to Tier 3 pricing for all steps creates structural overspend.
 
 AION makes model selection proportional to actual task complexity.
 
@@ -504,6 +504,16 @@ go test ./internal/classifier/... -run TestBenchmark -v
 ```
 
 Benchmarks validate routing behavior, not output quality. Savings depend on workload distribution.
+
+---
+
+## Open Core
+
+AION’s routing engine and classifier are fully open source.
+
+Advanced features such as adaptive learning, hosted analytics, and enterprise governance may be provided as optional external services in the future.
+
+The core routing logic will remain open.
 
 ---
 
