@@ -1,10 +1,18 @@
 # AION -- Intelligent LLM Cost Router
 
-**Same quality. 40-70% cheaper.**
+Deterministic LLM routing that reduces cost by matching model tier to task complexity.
 
-AION analyzes the complexity of your LLM requests and routes them to the cheapest model that can handle it. Simple questions go to cheap models. Complex reasoning goes to capable ones. You save money without sacrificing quality.
+AION is a local proxy that classifies the complexity of each LLM request in <1ms and routes it to the cheapest model that can handle it. No GPU, no external API calls -- a single Go binary.
 
-> AION is NOT another OpenRouter/LiteLLM. Those are dumb pipes -- you pick a model, they forward. AION is different: you send a request without specifying a model, and AION figures out the right one.
+> AION is not a gateway like OpenRouter or LiteLLM. Those forward requests to whichever model you specify. AION decides which model to use: you send `model: "aion-auto"` and the classifier picks the tier.
+
+## Why This Exists
+
+Most agentic tools default to the most capable model for every request.
+
+In autonomous coding sessions, 70-85% of steps are mechanically simple -- file reads, lint fixes, small edits, "run the tests." Defaulting to Tier 3 pricing for all steps creates structural overspend.
+
+AION makes model selection proportional to actual task complexity.
 
 ## Supported Providers
 
@@ -242,7 +250,7 @@ curl -N http://localhost:8080/v1/messages \
                   +-----+-----+
                         |
                   +-----v------+
-                  | Telemetry  |  async, batched
+                  | Telemetry  |  async, batched, local
                   |  (SQLite)  |
                   +------------+
 ```
@@ -451,7 +459,7 @@ docker compose down              # stop
 The compose file:
 - Builds from the included Dockerfile
 - Bind-mounts `configs/aion.yaml` (read-only)
-- Persists SQLite telemetry data in a named volume
+- Persists SQLite telemetry data in a named volume (local only -- no data leaves your infrastructure)
 - Reads secrets from `.env`
 - Health checks `/health` every 10s
 
@@ -484,6 +492,29 @@ go vet ./...
 
 - Go 1.25+
 - Docker (optional)
+
+---
+
+## Benchmarks
+
+Classifier benchmarks (1000-prompt workload test and 200-step autonomous session simulation) are available in `internal/classifier/benchmark_test.go`.
+
+```bash
+go test ./internal/classifier/... -run TestBenchmark -v
+```
+
+Benchmarks validate routing behavior, not output quality. Savings depend on workload distribution.
+
+---
+
+## Roadmap
+
+- [ ] Adaptive routing based on regeneration signals (auto-escalate on retry)
+- [ ] Latency-aware routing (factor in provider response times, not just cost)
+- [ ] Token budget targeting ("best answer for $0.01")
+- [ ] Routing analytics dashboard
+- [ ] Cross-session learning from misroutes
+- [ ] Enterprise governance and policy controls
 
 ---
 
