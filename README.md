@@ -83,7 +83,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ```bash
 # Pull the image
-docker pull shubhamdx/aion:latest    # or shubhamdx/aion:0.2.0
+docker pull shubhamdx/aion:latest    # or shubhamdx/aion:0.3.0
 
 # Grab the example config
 curl -O https://raw.githubusercontent.com/ShubhamDX/aion/main/configs/aion.example.yaml
@@ -268,6 +268,23 @@ The classifier produces a score between 0.0 and 1.0:
 - **Score > 0.70** -- Tier 3 (complex): most capable models (o1, Opus, Grok)
 
 The classifier is tuned for agentic clients like Claude Code -- it strips `<system-reminder>` tags and focuses on the actual user message, not boilerplate scaffolding.
+
+### Confirmation-Aware Escalation
+
+Short confirmation messages like "do it", "yes", or "go ahead" normally score as trivially simple. But in a multi-turn conversation, these are often confirmations of a complex task the assistant just proposed.
+
+AION detects ~35 common confirmation patterns and, when triggered, analyses the preceding assistant message for complexity indicators: code blocks, implementation keywords, multi-step plans, and response length. If the assistant context is complex, the score is escalated to match.
+
+```
+User: "refactor the entire auth system with JWT refresh token rotation"
+Assistant: [proposes 3-step plan with code blocks]
+User: "do it"
+
+Without escalation:  score=0.12 → Tier 1 (Haiku)    ← wrong model for the job
+With escalation:     score=0.85 → Tier 3 (Opus)      ← correct
+```
+
+This only fires for exact-match short confirmations (max 60 chars) and only escalates when the assistant context justifies it. A "yes" after "Hi, how can I help?" stays in Tier 1.
 
 ### Virtual Models
 
