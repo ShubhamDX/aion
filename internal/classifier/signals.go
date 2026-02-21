@@ -140,6 +140,121 @@ func contentKeywordsSignal(req *types.ChatCompletionRequest) float64 {
 	return math.Min(1.0, score)
 }
 
+// confirmationPatterns are short messages that indicate the user is confirming
+// a previous assistant proposal rather than making a new request.
+var confirmationPatterns = []string{
+	"do it", "yes", "go ahead", "proceed", "sure", "ok", "okay", "yep", "yeah",
+	"please do", "go for it", "sounds good", "that works", "let's do it",
+	"make it so", "approved", "lgtm", "ship it", "yes please", "yes go ahead",
+	"do that", "go", "continue", "yes do it", "implement it", "do this",
+	"let's go", "make it happen", "start", "begin", "run it", "y", "yea",
+	"implement this", "make the change", "make the changes", "apply it",
+	"go ahead and do it", "please proceed", "do it please",
+}
+
+// isConfirmation returns true if the stripped, lowered user message is a
+// short affirmative that confirms a prior assistant proposal.
+func isConfirmation(content string) bool {
+	content = strings.TrimSpace(strings.ToLower(content))
+
+	// Real confirmations are brief.
+	if len(content) > 60 {
+		return false
+	}
+
+	// Strip trailing punctuation for matching.
+	cleaned := strings.TrimRight(content, "!.?, ")
+
+	for _, pattern := range confirmationPatterns {
+		if cleaned == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+// lastUserMessage returns the content of the last user message in the request,
+// with <system-reminder> tags stripped.
+func lastUserMessage(req *types.ChatCompletionRequest) string {
+	if req == nil {
+		return ""
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if strings.ToLower(req.Messages[i].Role) == "user" {
+			return strings.TrimSpace(stripSystemReminders(req.Messages[i].ContentString()))
+		}
+	}
+	return ""
+}
+
+// assistantContextScore analyses the last assistant message before the final
+// user message to determine the conversation's complexity context. This is
+// used when the user sends a short confirmation like "do it" — the complexity
+// of the task lives in the assistant's preceding proposal, not in the user's
+// two-word reply.
+func assistantContextScore(req *types.ChatCompletionRequest) float64 {
+	if req == nil {
+		return 0.0
+	}
+
+	// Walk backwards: skip past the last user message, then find the
+	// assistant message immediately before it.
+	foundUser := false
+	var assistantContent string
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		role := strings.ToLower(req.Messages[i].Role)
+		if !foundUser && role == "user" {
+			foundUser = true
+			continue
+		}
+		if foundUser && role == "assistant" {
+			assistantContent = req.Messages[i].ContentString()
+			break
+		}
+	}
+
+	if assistantContent == "" {
+		return 0.0
+	}
+
+	lower := strings.ToLower(assistantContent)
+	var score float64
+
+	// Code blocks indicate implementation context.
+	codeBlocks := strings.Count(lower, "```")
+	if codeBlocks >= 4 {
+		score = math.Max(score, 0.85)
+	} else if codeBlocks >= 2 {
+		score = math.Max(score, 0.65)
+	}
+
+	// Implementation / architecture language.
+	if containsAny(lower, "implement", "refactor", "architect", "design pattern",
+		"migration", "restructure", "overhaul") {
+		score = math.Max(score, 0.75)
+	}
+
+	// Multi-step plans.
+	if containsAny(lower, "step 1", "1.") &&
+		containsAny(lower, "step 2", "2.", "then") {
+		score = math.Max(score, 0.70)
+	}
+
+	// Debugging context.
+	if containsAny(lower, "the bug", "the error", "root cause", "stack trace") {
+		score = math.Max(score, 0.55)
+	}
+
+	// Long assistant responses suggest complex context.
+	if len(assistantContent) > 3000 {
+		score = math.Max(score, 0.60)
+	} else if len(assistantContent) > 1000 {
+		score = math.Max(score, 0.40)
+	}
+
+	return score
+}
+
 // userHintsSignal incorporates explicit user preferences into the score.
 // Weight: 0.15
 func userHintsSignal(req *types.ChatCompletionRequest) float64 {

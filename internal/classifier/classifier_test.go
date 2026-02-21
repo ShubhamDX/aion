@@ -206,6 +206,98 @@ func TestPreferSpeedHint(t *testing.T) {
 	}
 }
 
+// --- Confirmation escalation tests ---
+
+func TestConfirmation_DoIt_EscalatesToTier3(t *testing.T) {
+	c := newTestClassifier()
+	req := &types.ChatCompletionRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: raw("refactor the entire auth system with proper error handling")},
+			{Role: "assistant", Content: raw("I'll refactor the auth system. Here's my plan:\n\n1. Extract the authentication logic into a dedicated middleware\n2. Implement proper error types\n3. Add retry logic with exponential backoff\n\n```go\nfunc AuthMiddleware(next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\t// validate token\n\t})\n}\n```\n\n```go\nfunc NewAuthService(cfg Config) *AuthService {\n\t// implementation\n}\n```\n\nShall I proceed with the implementation?")},
+			{Role: "user", Content: raw("do it")},
+		},
+	}
+	tier, score, signals := c.Classify(req)
+	if tier == types.Tier1 {
+		t.Errorf("expected Tier2 or Tier3 for 'do it' after complex proposal, got Tier1 (score=%.4f, signals=%v)", score, signals)
+	}
+	if signals["confirmation_escalation"] == 0 {
+		t.Errorf("expected confirmation_escalation signal to be set, signals=%v", signals)
+	}
+	t.Logf("Confirmation 'do it': tier=%v score=%.4f signals=%v", tier, score, signals)
+}
+
+func TestConfirmation_YesGoAhead_EscalatesToTier2(t *testing.T) {
+	c := newTestClassifier()
+	req := &types.ChatCompletionRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: raw("can you fix the login bug?")},
+			{Role: "assistant", Content: raw("I found the bug. The token validation is failing because the expiry check uses UTC but the token was created with local time. I can fix this by normalizing both to UTC. Want me to make the change?")},
+			{Role: "user", Content: raw("yes go ahead")},
+		},
+	}
+	tier, score, signals := c.Classify(req)
+	if tier == types.Tier1 {
+		t.Errorf("expected Tier2+ for 'yes go ahead' after debugging context, got Tier1 (score=%.4f, signals=%v)", score, signals)
+	}
+	t.Logf("Confirmation 'yes go ahead': tier=%v score=%.4f signals=%v", tier, score, signals)
+}
+
+func TestConfirmation_NoEscalationForSimpleContext(t *testing.T) {
+	c := newTestClassifier()
+	req := &types.ChatCompletionRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: raw("hello")},
+			{Role: "assistant", Content: raw("Hi! How can I help you today?")},
+			{Role: "user", Content: raw("ok")},
+		},
+	}
+	tier, score, signals := c.Classify(req)
+	if tier != types.Tier1 {
+		t.Errorf("expected Tier1 for 'ok' after simple greeting, got %v (score=%.4f, signals=%v)", tier, score, signals)
+	}
+	t.Logf("No escalation for simple context: tier=%v score=%.4f signals=%v", tier, score, signals)
+}
+
+func TestConfirmation_NoEscalationForFirstMessage(t *testing.T) {
+	c := newTestClassifier()
+	req := &types.ChatCompletionRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: raw("yes")},
+		},
+	}
+	tier, score, signals := c.Classify(req)
+	if tier != types.Tier1 {
+		t.Errorf("expected Tier1 for 'yes' with no prior context, got %v (score=%.4f, signals=%v)", tier, score, signals)
+	}
+}
+
+func TestIsConfirmation(t *testing.T) {
+	positives := []string{
+		"do it", "yes", "go ahead", "proceed", "sure", "ok", "okay",
+		"Do it!", "Yes.", "GO AHEAD", "Sure!!", "LGTM",
+		"yes please", "implement it", "ship it",
+	}
+	for _, msg := range positives {
+		if !isConfirmation(msg) {
+			t.Errorf("expected isConfirmation(%q) = true", msg)
+		}
+	}
+
+	negatives := []string{
+		"do it but also refactor the database layer",
+		"yes and also add tests for the edge cases",
+		"implement the auth system with JWT tokens and refresh logic",
+		"hello world",
+		"what is 2+2",
+	}
+	for _, msg := range negatives {
+		if isConfirmation(msg) {
+			t.Errorf("expected isConfirmation(%q) = false", msg)
+		}
+	}
+}
+
 // --- Intent signal unit tests ---
 
 func makeIntentReq(userMsg string) *types.ChatCompletionRequest {

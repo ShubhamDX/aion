@@ -74,6 +74,12 @@ func New(cfg config.ClassifierConfig) *Classifier {
 
 // Classify analyses the request and returns the assigned tier, the raw
 // weighted score, and a breakdown of individual signal values.
+//
+// Confirmation escalation: when the last user message is a short confirmation
+// like "do it" or "yes go ahead", the normal signals score it as trivially
+// simple. In that case we analyse the preceding assistant message for
+// complexity indicators and escalate the score so the request routes to a
+// model capable of handling the actual task context.
 func (c *Classifier) Classify(req *types.ChatCompletionRequest) (types.Tier, float64, map[string]float64) {
 	signals := make(map[string]float64, len(c.signals))
 	var totalScore float64
@@ -82,6 +88,16 @@ func (c *Classifier) Classify(req *types.ChatCompletionRequest) (types.Tier, flo
 		signals[ws.Name] = val
 		totalScore += val * ws.Weight
 	}
+
+	// Confirmation escalation.
+	if msg := lastUserMessage(req); isConfirmation(msg) {
+		ctxScore := assistantContextScore(req)
+		if ctxScore > totalScore {
+			signals["confirmation_escalation"] = ctxScore
+			totalScore = ctxScore
+		}
+	}
+
 	tier := TierFromScore(totalScore, c.t1Threshold, c.t2Threshold)
 	return tier, totalScore, signals
 }
