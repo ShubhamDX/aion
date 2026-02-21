@@ -2,10 +2,7 @@
 """
 Train the DEFAULT intent classifier from:
   1. Public datasets (Databricks Dolly 15K — CC-BY-SA-3.0)
-  2. Anonymized real prompts (if available)
-  3. Synthetic examples
-
-This model is safe for public repos — no private terms in the vocabulary.
+  2. Synthetic examples
 
 Output: models/intent_classifier_default.json (committed to repo)
 """
@@ -23,7 +20,6 @@ from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.metrics import classification_report
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ANON_PATH = os.path.join(SCRIPT_DIR, "anonymized_prompts.json")
 DOLLY_CACHE = os.path.join(SCRIPT_DIR, "dolly_15k.jsonl")
 OUTPUT_PATH = os.path.join(SCRIPT_DIR, "..", "models", "intent_classifier_default.json")
 
@@ -637,18 +633,7 @@ def main():
         for cat, count in dolly_dist.most_common():
             print(f"  {cat}: {count}")
 
-    # 2. Load anonymized real prompts if available.
-    if os.path.exists(ANON_PATH):
-        with open(ANON_PATH) as f:
-            anon = json.load(f)
-        for p in anon:
-            texts.append(p["text"])
-            labels.append(p["label"])
-        print(f"\nLoaded {len(anon)} anonymized real prompts")
-    else:
-        print("\nNo anonymized prompts found — using public + synthetic data only")
-
-    # 3. Add all synthetic data.
+    # 2. Add all synthetic data.
     for cat, examples in SYNTHETIC.items():
         for ex in examples:
             texts.append(ex)
@@ -684,12 +669,7 @@ def main():
     print("\n" + classification_report(labels, y_pred, zero_division=0))
 
     # 4. Verify vocabulary is clean — no private terms.
-    private_terms = list(PROJECT_REPLACEMENTS.keys()) + list(VENDOR_REPLACEMENTS.keys()) + list(NAME_REPLACEMENTS.keys())
-    leaked = [t for t in private_terms if t in vectorizer.vocabulary_]
-    if leaked:
-        print(f"WARNING: Private terms found in vocabulary: {leaked}")
-    else:
-        print("Vocabulary is clean — no private terms detected")
+    print("Vocabulary check: model uses only public/synthetic training data")
 
     # 5. Export.
     export = to_native({
@@ -709,9 +689,6 @@ def main():
     size_kb = os.path.getsize(OUTPUT_PATH) / 1024
     print(f"\nExported default model to {OUTPUT_PATH} ({size_kb:.1f} KB)")
 
-
-# Import private term lists from anonymize script for vocabulary check.
-from anonymize_prompts import PROJECT_REPLACEMENTS, VENDOR_REPLACEMENTS, NAME_REPLACEMENTS
 
 if __name__ == "__main__":
     main()

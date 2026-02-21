@@ -49,9 +49,10 @@ configs/aion.yaml
 models/intent_classifier.json
 scripts/extracted_prompts.json
 scripts/labeled_prompts.json
+scripts/anonymized_prompts.json
 scripts/label_stats.txt
 scripts/dolly_15k.jsonl
-# Note: models/intent_classifier_default.json is TRACKED (public-safe, anonymized)
+# Note: models/intent_classifier_default.json is TRACKED (public-safe)
 
 # Build
 /tmp/
