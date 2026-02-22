@@ -5,93 +5,22 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	pkgconfig "github.com/ShubhamDX/aion/pkg/config"
 )
 
-// Config is the top-level AION gateway configuration.
-type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Auth      AuthConfig      `yaml:"auth"`
-	Providers ProvidersConfig `yaml:"providers"`
-	Routing   RoutingConfig   `yaml:"routing"`
-	Telemetry TelemetryConfig `yaml:"telemetry"`
-}
-
-// ServerConfig holds HTTP server settings.
-type ServerConfig struct {
-	Port            int    `yaml:"port"`
-	ReadTimeout     string `yaml:"read_timeout"`
-	WriteTimeout    string `yaml:"write_timeout"`
-	ShutdownTimeout string `yaml:"shutdown_timeout"`
-}
-
-// AuthConfig controls API-key authentication.
-type AuthConfig struct {
-	Enabled bool        `yaml:"enabled"`
-	Keys    []KeyConfig `yaml:"keys"`
-}
-
-// KeyConfig represents a single API key with optional budget limits.
-type KeyConfig struct {
-	Key    string       `yaml:"key"`
-	Name   string       `yaml:"name"`
-	Budget BudgetConfig `yaml:"budget"`
-}
-
-// BudgetConfig defines spending limits for an API key.
-type BudgetConfig struct {
-	DailyLimitUSD   float64 `yaml:"daily_limit_usd"`
-	MonthlyLimitUSD float64 `yaml:"monthly_limit_usd"`
-}
-
-// ProvidersConfig holds configuration for each upstream LLM provider.
-type ProvidersConfig struct {
-	OpenAI     *ProviderConfig `yaml:"openai,omitempty"`
-	Anthropic  *ProviderConfig `yaml:"anthropic,omitempty"`
-	OpenRouter *ProviderConfig `yaml:"openrouter,omitempty"`
-	Bedrock    *ProviderConfig `yaml:"bedrock,omitempty"`
-	Vertex     *ProviderConfig `yaml:"vertex,omitempty"`
-	Gemini     *ProviderConfig `yaml:"gemini,omitempty"`
-	Grok       *ProviderConfig `yaml:"grok,omitempty"`
-}
-
-// ProviderConfig is the configuration for a single LLM provider.
-type ProviderConfig struct {
-	APIKey    string        `yaml:"api_key"`
-	BaseURL   string        `yaml:"base_url,omitempty"`
-	Region    string        `yaml:"region,omitempty"`
-	ProjectID string        `yaml:"project_id,omitempty"`
-	Models    []ModelConfig `yaml:"models"`
-}
-
-// ModelConfig describes a model exposed through a provider.
-type ModelConfig struct {
-	ID               string  `yaml:"id"`
-	Tier             int     `yaml:"tier"`
-	InputPricePer1M  float64 `yaml:"input_price_per_1m"`
-	OutputPricePer1M float64 `yaml:"output_price_per_1m"`
-	MaxTokens        int     `yaml:"max_tokens,omitempty"`
-}
-
-// RoutingConfig controls how requests are routed to models.
-type RoutingConfig struct {
-	Strategy        string           `yaml:"strategy"`
-	Classifier      ClassifierConfig `yaml:"classifier"`
-	FallbackEnabled bool             `yaml:"fallback_enabled"`
-}
-
-// ClassifierConfig holds thresholds for the complexity classifier.
-type ClassifierConfig struct {
-	Tier1Threshold  float64 `yaml:"tier1_threshold"`
-	Tier2Threshold  float64 `yaml:"tier2_threshold"`
-	IntentModelPath string  `yaml:"intent_model_path,omitempty"`
-}
-
-// TelemetryConfig controls the async telemetry recorder.
-type TelemetryConfig struct {
-	DBPath        string `yaml:"db_path"`
-	BatchSize     int    `yaml:"batch_size"`
-	FlushInterval string `yaml:"flush_interval"`
-}
+// Type aliases — all existing internal imports compile unchanged.
+type Config = pkgconfig.Config
+type ServerConfig = pkgconfig.ServerConfig
+type AuthConfig = pkgconfig.AuthConfig
+type KeyConfig = pkgconfig.KeyConfig
+type BudgetConfig = pkgconfig.BudgetConfig
+type ProvidersConfig = pkgconfig.ProvidersConfig
+type ProviderConfig = pkgconfig.ProviderConfig
+type ModelConfig = pkgconfig.ModelConfig
+type RoutingConfig = pkgconfig.RoutingConfig
+type ClassifierConfig = pkgconfig.ClassifierConfig
+type TelemetryConfig = pkgconfig.TelemetryConfig
 
 // Load reads the YAML configuration file at the given path, expands
 // environment variables in the raw content, unmarshals the result,

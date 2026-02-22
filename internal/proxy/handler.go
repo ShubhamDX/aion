@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/ShubhamDX/aion/internal/apikey"
-	"github.com/ShubhamDX/aion/internal/classifier"
 	"github.com/ShubhamDX/aion/internal/pricing"
 	"github.com/ShubhamDX/aion/internal/provider"
 	"github.com/ShubhamDX/aion/internal/router"
 	"github.com/ShubhamDX/aion/internal/server"
 	"github.com/ShubhamDX/aion/internal/telemetry"
 	"github.com/ShubhamDX/aion/internal/types"
+	pkgclassifier "github.com/ShubhamDX/aion/pkg/classifier"
 )
 
 // BudgetChecker validates whether a request is within budget and records spend.
@@ -27,7 +27,7 @@ type BudgetChecker interface {
 // Handler orchestrates the full lifecycle of a proxied chat completion request:
 // classify, route, budget-check, dispatch to provider, record telemetry.
 type Handler struct {
-	classifier *classifier.Classifier
+	classifier pkgclassifier.Classifier
 	router     *router.Router
 	registry   *provider.Registry
 	budget     BudgetChecker
@@ -38,7 +38,7 @@ type Handler struct {
 // NewHandler creates a new proxy Handler. budget and recorder may be nil; when
 // nil the corresponding functionality is silently skipped.
 func NewHandler(
-	cls *classifier.Classifier,
+	cls pkgclassifier.Classifier,
 	rtr *router.Router,
 	reg *provider.Registry,
 	bgt BudgetChecker,
