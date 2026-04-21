@@ -42,6 +42,42 @@ func applyDefaults(cfg *Config) {
 	if cfg.Telemetry.FlushInterval == "" {
 		cfg.Telemetry.FlushInterval = "5s"
 	}
+
+	// Local provider defaults.
+	applyLocalDefaults(cfg)
+}
+
+func applyLocalDefaults(cfg *Config) {
+	lp := cfg.Providers.Local
+	if lp == nil || !lp.Enabled {
+		return
+	}
+
+	if lp.BaseURL == "" {
+		lp.BaseURL = "http://localhost:8081/v1"
+	}
+
+	if lp.Managed != nil {
+		m := lp.Managed
+		if m.Port == 0 {
+			m.Port = 8081
+		}
+		if m.ContextSize == 0 {
+			m.ContextSize = 4096
+		}
+		if m.BatchSize == 0 {
+			m.BatchSize = 512
+		}
+		if m.ReadyTimeout == "" {
+			m.ReadyTimeout = "120s"
+		}
+	}
+
+	// Force $0 pricing for all local models.
+	for i := range lp.Models {
+		lp.Models[i].InputPricePer1M = 0
+		lp.Models[i].OutputPricePer1M = 0
+	}
 }
 
 // validate checks the configuration for logical errors.
@@ -64,6 +100,16 @@ func validate(cfg *Config) error {
 		errs = append(errs, fmt.Errorf(
 			"classifier thresholds must satisfy 0 < tier1 < tier2 < 1, got tier1=%g tier2=%g", t1, t2,
 		))
+	}
+
+	// Local provider validation.
+	if lp := cfg.Providers.Local; lp != nil && lp.Enabled {
+		if len(lp.Models) == 0 {
+			errs = append(errs, errors.New("local provider is enabled but no models are configured"))
+		}
+		if lp.Managed != nil && lp.Managed.ModelPath == "" {
+			errs = append(errs, errors.New("local.managed.model_path is required in managed mode"))
+		}
 	}
 
 	// If auth is enabled, at least one key is required.
@@ -90,6 +136,9 @@ func hasProvider(cfg *Config) bool {
 		if p != nil && len(p.Models) > 0 {
 			return true
 		}
+	}
+	if lp := cfg.Providers.Local; lp != nil && lp.Enabled && len(lp.Models) > 0 {
+		return true
 	}
 	return false
 }

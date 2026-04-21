@@ -45,6 +45,18 @@ func NewTable(providers config.ProvidersConfig) *Table {
 	addModels("gemini", providers.Gemini)
 	addModels("grok", providers.Grok)
 
+	// Local models — always $0.
+	if lp := providers.Local; lp != nil && lp.Enabled {
+		for _, m := range lp.Models {
+			prices[m.ID] = &ModelPrice{
+				ModelID:          m.ID,
+				Provider:         "local",
+				InputPricePer1M:  0,
+				OutputPricePer1M: 0,
+			}
+		}
+	}
+
 	return &Table{prices: prices}
 }
 

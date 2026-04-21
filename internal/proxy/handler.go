@@ -90,6 +90,17 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	case model == "aion-local":
+		// Force routing to the local llama.cpp provider.
+		tier = types.Tier1
+		var err error
+		selectedModel, err = h.router.FindByProvider("local")
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "no_model_available",
+				"No local model available: "+err.Error())
+			return
+		}
+
 	case model == "aion-escalate":
 		// Force highest tier.
 		tier = types.Tier3
@@ -139,6 +150,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	)
 	w.Header().Set("X-AION-Tier", fmt.Sprintf("%d", int(tier)))
 	w.Header().Set("X-AION-Model", selectedModel.ID)
+	w.Header().Set("X-AION-Provider", selectedModel.Provider)
 	w.Header().Set("X-Request-ID", requestID)
 
 	// 6. Dispatch -- streaming or non-streaming.

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,11 +40,12 @@ type Options struct {
 
 // App encapsulates the full AION gateway runtime.
 type App struct {
-	cfg      *config.Config
-	srv      *server.Server
-	recorder *telemetry.Recorder
-	store    *telemetry.Store
-	cancel   context.CancelFunc
+	cfg           *config.Config
+	srv           *server.Server
+	recorder      *telemetry.Recorder
+	store         *telemetry.Store
+	cancel        context.CancelFunc
+	localProvider *provider.LocalProvider
 }
 
 // Build constructs an App from the given options. It loads config, initializes
@@ -97,6 +99,37 @@ func Build(opts Options) (*App, error) {
 	}
 	if cfg.Providers.Grok != nil {
 		registry.Register(provider.NewGrok(cfg.Providers.Grok))
+	}
+
+	// Local provider (llama.cpp).
+	var localProvider *provider.LocalProvider
+	if lp := cfg.Providers.Local; lp != nil && lp.Enabled {
+		localProvider = provider.NewLocal(lp)
+
+		// Managed mode: start llama-server subprocess.
+		if lp.Managed != nil {
+			proc := provider.NewLlamaProcess(lp.Managed)
+			if err := proc.Start(); err != nil {
+				cancel()
+				store.Close()
+				return nil, fmt.Errorf("local provider: %w", err)
+			}
+			localProvider.SetProcess(proc)
+
+			// Wait for the server to become ready.
+			readyTimeout, _ := time.ParseDuration(lp.Managed.ReadyTimeout)
+			if readyTimeout == 0 {
+				readyTimeout = 120 * time.Second
+			}
+			if err := localProvider.WaitReady(ctx, readyTimeout); err != nil {
+				_ = proc.Stop()
+				cancel()
+				store.Close()
+				return nil, fmt.Errorf("local provider: %w", err)
+			}
+		}
+
+		registry.Register(localProvider)
 	}
 
 	// Resolve classifier.
@@ -164,11 +197,12 @@ func Build(opts Options) (*App, error) {
 	)
 
 	return &App{
-		cfg:      cfg,
-		srv:      srv,
-		recorder: recorder,
-		store:    store,
-		cancel:   cancel,
+		cfg:           cfg,
+		srv:           srv,
+		recorder:      recorder,
+		store:         store,
+		cancel:        cancel,
+		localProvider: localProvider,
 	}, nil
 }
 
@@ -210,6 +244,13 @@ func (a *App) Run() error {
 		slog.Error("server shutdown error", "error", err)
 	}
 
+	// Shutdown local provider (managed llama-server).
+	if a.localProvider != nil {
+		if err := a.localProvider.Shutdown(); err != nil {
+			slog.Error("local provider shutdown error", "error", err)
+		}
+	}
+
 	// Stop telemetry recorder (drains remaining events).
 	a.cancel()
 	a.recorder.Stop()
@@ -234,7 +275,7 @@ func listModelsHandler(cfg *config.Config) http.HandlerFunc {
 	var models []types.ModelInfo
 	now := time.Now().Unix()
 
-	aionModels := []string{"aion-auto", "aion-escalate"}
+	aionModels := []string{"aion-auto", "aion-escalate", "aion-local"}
 	for _, id := range aionModels {
 		models = append(models, types.ModelInfo{
 			ID:      id,
@@ -264,6 +305,18 @@ func listModelsHandler(cfg *config.Config) http.HandlerFunc {
 	addModels("vertex", cfg.Providers.Vertex)
 	addModels("gemini", cfg.Providers.Gemini)
 	addModels("grok", cfg.Providers.Grok)
+
+	// Add local provider models.
+	if lp := cfg.Providers.Local; lp != nil && lp.Enabled {
+		for _, m := range lp.Models {
+			models = append(models, types.ModelInfo{
+				ID:      m.ID,
+				Object:  "model",
+				Created: now,
+				OwnedBy: "local",
+			})
+		}
+	}
 
 	resp := types.ModelListResponse{
 		Object: "list",

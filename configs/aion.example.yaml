@@ -123,6 +123,38 @@ providers:
   #       input_price_per_1m: 3.00
   #       output_price_per_1m: 15.00
 
+  # Local model inference via llama.cpp (handles Tier 1 requests at $0 cost).
+  # Two modes:
+  #   Sidecar: llama-server runs as a separate container (docker-compose --profile local up)
+  #   Managed: AION starts llama-server as a subprocess (dev/single-node)
+  #
+  # Sidecar mode (production):
+  # local:
+  #   enabled: true
+  #   base_url: "http://llama-server:8081/v1"  # Docker service name
+  #   models:
+  #     - id: "qwen2.5-1.5b-instruct"
+  #       tier: 1
+  #       # Pricing is forced to $0 — no need to specify.
+  #
+  # Managed mode (dev/single-node):
+  # local:
+  #   enabled: true
+  #   # base_url defaults to http://localhost:8081/v1
+  #   models:
+  #     - id: "qwen2.5-1.5b-instruct"
+  #       tier: 1
+  #   managed:
+  #     binary_path: "llama-server"           # Path to llama-server binary
+  #     model_path: "./models/your-model.gguf"
+  #     port: 8081
+  #     ctx_size: 4096
+  #     batch_size: 512
+  #     threads: 4
+  #     gpu_layers: 0
+  #     ready_timeout: "120s"
+  #     # extra_args: ["--flash-attn"]
+
 routing:
   strategy: "cheapest"  # Options: cheapest, fallback
   classifier:

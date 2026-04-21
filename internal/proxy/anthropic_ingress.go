@@ -376,6 +376,16 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	case model == "aion-local":
+		tier = types.Tier1
+		var err error
+		selectedModel, err = h.router.FindByProvider("local")
+		if err != nil {
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error",
+				"No local model available: "+err.Error())
+			return
+		}
+
 	case model == "aion-escalate":
 		tier = types.Tier3
 		var err error
@@ -435,6 +445,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	)
 	w.Header().Set("X-AION-Tier", fmt.Sprintf("%d", int(tier)))
 	w.Header().Set("X-AION-Model", selectedModel.ID)
+	w.Header().Set("X-AION-Provider", selectedModel.Provider)
 	w.Header().Set("X-Request-ID", requestID)
 
 	// 7. Dispatch — streaming or non-streaming.

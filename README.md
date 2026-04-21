@@ -25,6 +25,41 @@ AION makes model selection proportional to actual task complexity.
 | **Google Gemini** | OpenAI-compatible | Bearer token |
 | **xAI Grok** | OpenAI-compatible | Bearer token |
 | **OpenRouter** | OpenAI-compatible | Bearer token |
+| **Local (llama.cpp)** | OpenAI-compatible (llama-server) | None -- $0 |
+
+## Local Inference
+
+AION can route Tier 1 traffic to a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server at $0 cost. Two modes:
+
+**Sidecar (recommended):** `docker compose --profile local up -d` starts a companion `llama-server` container. The first run downloads the GGUF model into a named volume (default: Qwen2.5-1.5B-Instruct Q4_K_M, ~1GB). Override via `LLAMA_MODEL_REPO` / `LLAMA_MODEL_FILE` env vars. Enable in `configs/aion.yaml`:
+
+```yaml
+providers:
+  local:
+    enabled: true
+    base_url: "http://llama-server:8081/v1"
+    models:
+      - id: "qwen2.5-1.5b-instruct"
+        tier: 1
+```
+
+**Managed (dev/single-node):** AION spawns llama-server as a subprocess. Useful when you have llama-server installed locally.
+
+```yaml
+providers:
+  local:
+    enabled: true
+    models:
+      - id: "qwen2.5-1.5b-instruct"
+        tier: 1
+    managed:
+      binary_path: "llama-server"
+      model_path: "./models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+      port: 8081
+      threads: 4
+```
+
+Force local routing with `model: "aion-local"`. Local models are always priced at $0, so `aion-auto` picks them first for any Tier 1 request.
 
 ## Supported Ingress Formats
 
