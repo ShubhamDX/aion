@@ -16,6 +16,68 @@ services:
       retries: 3
       start_period: 5s
     restart: unless-stopped
+    depends_on:
+      llama-server:
+        condition: service_healthy
+        required: false
+
+  # Downloads the GGUF model on first run. Subsequent starts skip the download.
+  # The model is stored in a named volume so it persists across restarts.
+  model-downloader:
+    image: alpine:3.19
+    volumes:
+      - llama-models:/models
+    environment:
+      - MODEL_REPO=${LLAMA_MODEL_REPO:-Qwen/Qwen2.5-1.5B-Instruct-GGUF}
+      - MODEL_FILE=${LLAMA_MODEL_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        TARGET="/models/$${MODEL_FILE}"
+        if [ -f "$$TARGET" ]; then
+          echo "Model already downloaded: $$TARGET"
+          exit 0
+        fi
+        echo "Downloading $$MODEL_FILE from $$MODEL_REPO ..."
+        apk add --no-cache wget > /dev/null 2>&1
+        wget -q --show-progress -O "$$TARGET.tmp" \
+          "https://huggingface.co/$${MODEL_REPO}/resolve/main/$${MODEL_FILE}" \
+          && mv "$$TARGET.tmp" "$$TARGET" \
+          && echo "Download complete: $$TARGET" \
+          || { echo "Download failed"; rm -f "$$TARGET.tmp"; exit 1; }
+    profiles:
+      - local
+
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8081:8081"
+    volumes:
+      - llama-models:/models:ro
+    command: >
+      --model /models/${LLAMA_MODEL_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      --port 8081
+      --host 0.0.0.0
+      --ctx-size 4096
+      --batch-size 512
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    profiles:
+      - local
 
 volumes:
   aion-data:
+  llama-models:

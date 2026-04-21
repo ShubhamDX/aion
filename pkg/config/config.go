@@ -38,13 +38,35 @@ type BudgetConfig struct {
 
 // ProvidersConfig holds configuration for each upstream LLM provider.
 type ProvidersConfig struct {
-	OpenAI     *ProviderConfig `yaml:"openai,omitempty"`
-	Anthropic  *ProviderConfig `yaml:"anthropic,omitempty"`
-	OpenRouter *ProviderConfig `yaml:"openrouter,omitempty"`
-	Bedrock    *ProviderConfig `yaml:"bedrock,omitempty"`
-	Vertex     *ProviderConfig `yaml:"vertex,omitempty"`
-	Gemini     *ProviderConfig `yaml:"gemini,omitempty"`
-	Grok       *ProviderConfig `yaml:"grok,omitempty"`
+	OpenAI     *ProviderConfig      `yaml:"openai,omitempty"`
+	Anthropic  *ProviderConfig      `yaml:"anthropic,omitempty"`
+	OpenRouter *ProviderConfig      `yaml:"openrouter,omitempty"`
+	Bedrock    *ProviderConfig      `yaml:"bedrock,omitempty"`
+	Vertex     *ProviderConfig      `yaml:"vertex,omitempty"`
+	Gemini     *ProviderConfig      `yaml:"gemini,omitempty"`
+	Grok       *ProviderConfig      `yaml:"grok,omitempty"`
+	Local      *LocalProviderConfig `yaml:"local,omitempty"`
+}
+
+// LocalProviderConfig configures the local llama.cpp inference provider.
+type LocalProviderConfig struct {
+	Enabled bool              `yaml:"enabled"`
+	BaseURL string            `yaml:"base_url,omitempty"`
+	Models  []ModelConfig     `yaml:"models"`
+	Managed *ManagedLlamaConfig `yaml:"managed,omitempty"`
+}
+
+// ManagedLlamaConfig controls the managed llama-server subprocess (dev/single-node mode).
+type ManagedLlamaConfig struct {
+	BinaryPath   string   `yaml:"binary_path"`
+	ModelPath    string   `yaml:"model_path"`
+	Port         int      `yaml:"port,omitempty"`
+	Threads      int      `yaml:"threads,omitempty"`
+	ContextSize  int      `yaml:"ctx_size,omitempty"`
+	GPULayers    int      `yaml:"gpu_layers,omitempty"`
+	BatchSize    int      `yaml:"batch_size,omitempty"`
+	ReadyTimeout string   `yaml:"ready_timeout,omitempty"`
+	ExtraArgs    []string `yaml:"extra_args,omitempty"`
 }
 
 // ProviderConfig is the configuration for a single LLM provider.

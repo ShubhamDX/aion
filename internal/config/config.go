@@ -21,6 +21,8 @@ type ModelConfig = pkgconfig.ModelConfig
 type RoutingConfig = pkgconfig.RoutingConfig
 type ClassifierConfig = pkgconfig.ClassifierConfig
 type TelemetryConfig = pkgconfig.TelemetryConfig
+type LocalProviderConfig = pkgconfig.LocalProviderConfig
+type ManagedLlamaConfig = pkgconfig.ManagedLlamaConfig
 
 // Load reads the YAML configuration file at the given path, expands
 // environment variables in the raw content, unmarshals the result,

@@ -58,6 +58,21 @@ func NewRouter(cfg *config.Config, health HealthChecker) *Router {
 	addProvider("gemini", cfg.Providers.Gemini)
 	addProvider("grok", cfg.Providers.Grok)
 
+	// Register local provider models with $0 pricing.
+	if lp := cfg.Providers.Local; lp != nil && lp.Enabled {
+		for _, m := range lp.Models {
+			opt := ModelOption{
+				ID:               m.ID,
+				Provider:         "local",
+				Tier:             types.Tier(m.Tier),
+				InputPricePer1M:  0,
+				OutputPricePer1M: 0,
+			}
+			tier := types.Tier(m.Tier)
+			models[tier] = append(models[tier], opt)
+		}
+	}
+
 	return &Router{
 		models:   models,
 		strategy: strategy,
@@ -110,4 +125,20 @@ func (r *Router) FindModel(modelID string) (*ModelOption, error) {
 		}
 	}
 	return nil, fmt.Errorf("router: model %q not found", modelID)
+}
+
+// FindByProvider finds the cheapest healthy model from the named provider.
+func (r *Router) FindByProvider(providerName string) (*ModelOption, error) {
+	var candidates []ModelOption
+	for _, options := range r.models {
+		for _, opt := range options {
+			if opt.Provider == providerName {
+				candidates = append(candidates, opt)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("router: no models found for provider %q", providerName)
+	}
+	return r.strategy.Select(candidates, r.health)
 }

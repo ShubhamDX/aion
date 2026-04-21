@@ -45,6 +45,9 @@ Thumbs.db
 # Real config (contains API keys); only the example is tracked
 configs/aion.yaml
 
+# GGUF model files (downloaded at runtime by docker-compose)
+*.gguf
+
 # Intent classifier — user-trained model + data derived from private prompts
 models/intent_classifier.json
 scripts/extracted_prompts.json
