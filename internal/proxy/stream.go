@@ -148,6 +148,10 @@ func (h *Handler) handleStream(
 			LatencyMS:      time.Since(start).Milliseconds(),
 			StatusCode:     http.StatusOK,
 			Stream:         true,
+			RequestDigest:  types.RequestContentDigest(req),
+			// Streamed response content is not reassembled here, so the output
+			// digest is empty; the input digest still binds the governed prompt.
+			ResponseDigest: "",
 		})
 	}
 }

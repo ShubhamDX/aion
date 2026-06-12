@@ -18,3 +18,9 @@ const (
 	VerdictBlock = pkgtypes.VerdictBlock
 	VerdictHold  = pkgtypes.VerdictHold
 )
+
+// Content-digest helpers (re-exported for internal/proxy).
+var (
+	RequestContentDigest  = pkgtypes.RequestContentDigest
+	ResponseContentDigest = pkgtypes.ResponseContentDigest
+)

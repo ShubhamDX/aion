@@ -143,6 +143,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			RoutedProvider: selectedModel.Provider,
 			Tier:           tier,
 			EstimatedCost:  estCost,
+			RequestDigest:  types.RequestContentDigest(&req),
 		})
 		switch dec.Verdict {
 		case types.VerdictBlock:
@@ -155,11 +156,19 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			return
 		case types.VerdictRoute:
 			if dec.RoutedModelOverride != "" && dec.RoutedModelOverride != selectedModel.ID {
-				if m, err := h.router.FindModel(dec.RoutedModelOverride); err == nil {
-					selectedModel = m
-					tier = m.Tier
-					w.Header().Set("X-AION-Decision", "route")
+				m, err := h.router.FindModel(dec.RoutedModelOverride)
+				if err != nil {
+					// Fail closed: a policy that ordered a route to a model the
+					// router does not know cannot be silently ignored (that would
+					// let the request proceed on the un-governed original route).
+					w.Header().Set("X-AION-Decision", "route_error")
+					writeError(w, http.StatusInternalServerError, "route_override_failed",
+						"policy routed to unknown model: "+dec.RoutedModelOverride)
+					return
 				}
+				selectedModel = m
+				tier = m.Tier
+				w.Header().Set("X-AION-Decision", "route")
 			}
 		}
 	}
@@ -276,6 +285,8 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			LatencyMS:      time.Since(start).Milliseconds(),
 			StatusCode:     resp.StatusCode,
 			Stream:         false,
+			RequestDigest:  types.RequestContentDigest(&req),
+			ResponseDigest: types.ResponseContentDigest(resp.ChatResponse),
 		})
 	}
 
