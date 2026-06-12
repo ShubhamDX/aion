@@ -27,6 +27,10 @@ func New(port int, handler http.Handler, readTimeout, writeTimeout time.Duration
 	}
 }
 
+// Handler returns the composed HTTP handler (middleware chain + routes), so an
+// embedder or test can serve it via httptest without binding a port.
+func (s *Server) Handler() http.Handler { return s.handler }
+
 // Start begins listening and serving HTTP requests. It blocks until the server
 // is shut down or an error occurs.
 func (s *Server) Start() error {

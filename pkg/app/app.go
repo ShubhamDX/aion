@@ -220,6 +220,12 @@ func (a *App) Config() *config.Config {
 	return a.cfg
 }
 
+// Handler returns the composed HTTP handler, so an embedder or test can drive
+// the gateway via httptest without binding a port (used for end-to-end tests).
+func (a *App) Handler() http.Handler {
+	return a.srv.Handler()
+}
+
 // Run starts the HTTP server and blocks until a SIGINT or SIGTERM is received,
 // then performs graceful shutdown.
 func (a *App) Run() error {
