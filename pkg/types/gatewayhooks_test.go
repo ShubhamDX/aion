@@ -86,3 +86,25 @@ func TestResponseContentDigest_BindsToolCalls(t *testing.T) {
 		t.Fatal("a tool-call response must digest differently from text (action surface bound)")
 	}
 }
+
+func TestRequestContentDigest_BindsCostRelevantFields(t *testing.T) {
+	mk := func(maxTok int) *ChatCompletionRequest {
+		return &ChatCompletionRequest{Model: "m", Messages: []Message{msg("user", "hi")}, MaxTokens: &maxTok}
+	}
+	a, b := mk(100), mk(4000)
+	if RequestContentDigest(a) == RequestContentDigest(b) {
+		t.Fatal("different max_tokens must change the digest (different budget risk)")
+	}
+}
+
+func TestRequestContentDigest_BindsMultimodalContent(t *testing.T) {
+	// Two messages whose TEXT parts are identical but image parts differ must
+	// digest differently (raw content bound, not text-flattened).
+	imgA := json.RawMessage(`[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"http://a/x.png"}}]`)
+	imgB := json.RawMessage(`[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"http://b/y.png"}}]`)
+	ra := &ChatCompletionRequest{Model: "m", Messages: []Message{{Role: "user", Content: imgA}}}
+	rb := &ChatCompletionRequest{Model: "m", Messages: []Message{{Role: "user", Content: imgB}}}
+	if RequestContentDigest(ra) == RequestContentDigest(rb) {
+		t.Fatal("different multimodal (image) content must change the digest")
+	}
+}

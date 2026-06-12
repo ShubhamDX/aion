@@ -6,59 +6,84 @@ import (
 	"encoding/json"
 )
 
-// governedMessage is the normalized, governed view of one message: role, text
-// content, and the tool surface (tool calls the model requested + the tool the
-// message answers). Tool calls + tool_call_id are part of the governed action
-// surface for agent traffic, so they are bound into the digest.
+// governedMessage is the normalized, governed view of one message. Content is
+// the RAW message content bytes (not text-flattened) so multimodal / image /
+// file parts change the digest, plus the tool surface (tool calls + the tool a
+// message answers).
 type governedMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	Name       string          `json:"name,omitempty"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 }
 
-// governedRequest is the canonical, governed projection of a request that the
-// digest covers: model, every message (incl tool calls), the available tools,
-// and the tool_choice. This binds the ACTION surface, not just the prompt text,
-// so a signed row proves what tools/actions were in scope (review finding #3).
+// governedRequest is the canonical, governed projection of EVERY parsed request
+// field that reaches policy, routing, pricing or provider dispatch — not just
+// the prompt + tool surface. Two requests that differ in any cost- or
+// policy-relevant way (max_tokens, stop, response_format, seed, user,
+// aion_preferences, sampling params) MUST produce different digests, so the
+// signed evidence binds the full governed input (review finding #1).
 type governedRequest struct {
-	Model      string            `json:"model"`
-	Messages   []governedMessage `json:"messages"`
-	Tools      []Tool            `json:"tools,omitempty"`
-	ToolChoice json.RawMessage   `json:"tool_choice,omitempty"`
+	Model            string            `json:"model"`
+	Messages         []governedMessage `json:"messages"`
+	Tools            []Tool            `json:"tools,omitempty"`
+	ToolChoice       json.RawMessage   `json:"tool_choice,omitempty"`
+	MaxTokens        *int              `json:"max_tokens,omitempty"`
+	Temperature      *float64          `json:"temperature,omitempty"`
+	TopP             *float64          `json:"top_p,omitempty"`
+	N                *int              `json:"n,omitempty"`
+	Stop             json.RawMessage   `json:"stop,omitempty"`
+	PresencePenalty  *float64          `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64          `json:"frequency_penalty,omitempty"`
+	LogitBias        map[string]int    `json:"logit_bias,omitempty"`
+	User             string            `json:"user,omitempty"`
+	ResponseFormat   *ResponseFormat   `json:"response_format,omitempty"`
+	Seed             *int              `json:"seed,omitempty"`
+	AIONPreferences  *AIONPreferences  `json:"aion_preferences,omitempty"`
+	Stream           bool              `json:"stream"`
 }
 
-// RequestContentDigest returns a sha256-hex digest over the request's full
-// governed surface (model, messages, tool calls, tools, tool_choice). It is a
-// one-way hash, never the content itself. Determinism: Go's encoding/json emits
-// struct fields in declaration order and map keys sorted, so the canonical bytes
-// are stable for equal inputs.
+// RequestContentDigest returns a sha256-hex digest over the request's FULL
+// governed surface (every parsed field reaching policy/routing/pricing/dispatch:
+// model, messages incl raw multimodal content + tool calls, tools, tool_choice,
+// max_tokens, stop, response_format, seed, user, sampling params,
+// aion_preferences, stream). One-way hash, never the content itself. Go's
+// encoding/json emits struct fields in declaration order and map keys sorted, so
+// the canonical bytes are stable for equal inputs.
 func RequestContentDigest(req *ChatCompletionRequest) string {
 	if req == nil {
 		return ""
 	}
-	g := governedRequest{Model: req.Model, Tools: req.Tools, ToolChoice: req.ToolChoice}
+	g := governedRequest{
+		Model: req.Model, Tools: req.Tools, ToolChoice: req.ToolChoice,
+		MaxTokens: req.MaxTokens, Temperature: req.Temperature, TopP: req.TopP,
+		N: req.N, Stop: req.Stop, PresencePenalty: req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty, LogitBias: req.LogitBias,
+		User: req.User, ResponseFormat: req.ResponseFormat, Seed: req.Seed,
+		AIONPreferences: req.AIONPreferences, Stream: req.Stream,
+	}
 	for _, m := range req.Messages {
 		g.Messages = append(g.Messages, governedMessage{
-			Role: m.Role, Content: m.ContentString(),
+			Role: m.Role, Content: m.Content, Name: m.Name,
 			ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID,
 		})
 	}
 	return digestJSON(g)
 }
 
-// governedChoice is the governed projection of one response choice: the message
-// text AND any tool calls the model emitted (a tool-only response has no text
-// but must still bind its action surface).
+// governedChoice is the governed projection of one response choice: the RAW
+// message content (multimodal-safe) AND any tool calls the model emitted (a
+// tool-only response has no text but must still bind its action surface).
 type governedChoice struct {
-	Content      string     `json:"content"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	FinishReason string     `json:"finish_reason"`
+	Content      json.RawMessage `json:"content"`
+	ToolCalls    []ToolCall      `json:"tool_calls,omitempty"`
+	FinishReason string          `json:"finish_reason"`
 }
 
 // ResponseContentDigest returns a sha256-hex digest over the response's governed
-// surface: each choice's text + tool calls + finish reason. "" when there are no
-// choices (e.g. an error or an empty/streamed-unavailable response).
+// surface: each choice's raw content + tool calls + finish reason. "" when there
+// are no choices (e.g. an error or an empty/streamed-unavailable response).
 func ResponseContentDigest(resp *ChatCompletionResponse) string {
 	if resp == nil || len(resp.Choices) == 0 {
 		return ""
@@ -66,7 +91,7 @@ func ResponseContentDigest(resp *ChatCompletionResponse) string {
 	gs := make([]governedChoice, 0, len(resp.Choices))
 	for _, c := range resp.Choices {
 		gs = append(gs, governedChoice{
-			Content: c.Message.ContentString(), ToolCalls: c.Message.ToolCalls,
+			Content: c.Message.Content, ToolCalls: c.Message.ToolCalls,
 			FinishReason: c.FinishReason,
 		})
 	}
