@@ -3,49 +3,84 @@ package types
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 )
 
-// RequestContentDigest returns a sha256-hex digest over the request's governed
-// content: the model + each message role and text content, length-framed so two
-// different message sets cannot collide. It is a one-way hash of the prompt, not
-// the prompt itself; the embedding product anchors evidence to it without ever
-// storing raw content.
+// governedMessage is the normalized, governed view of one message: role, text
+// content, and the tool surface (tool calls the model requested + the tool the
+// message answers). Tool calls + tool_call_id are part of the governed action
+// surface for agent traffic, so they are bound into the digest.
+type governedMessage struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// governedRequest is the canonical, governed projection of a request that the
+// digest covers: model, every message (incl tool calls), the available tools,
+// and the tool_choice. This binds the ACTION surface, not just the prompt text,
+// so a signed row proves what tools/actions were in scope (review finding #3).
+type governedRequest struct {
+	Model      string            `json:"model"`
+	Messages   []governedMessage `json:"messages"`
+	Tools      []Tool            `json:"tools,omitempty"`
+	ToolChoice json.RawMessage   `json:"tool_choice,omitempty"`
+}
+
+// RequestContentDigest returns a sha256-hex digest over the request's full
+// governed surface (model, messages, tool calls, tools, tool_choice). It is a
+// one-way hash, never the content itself. Determinism: Go's encoding/json emits
+// struct fields in declaration order and map keys sorted, so the canonical bytes
+// are stable for equal inputs.
 func RequestContentDigest(req *ChatCompletionRequest) string {
 	if req == nil {
 		return ""
 	}
-	h := sha256.New()
-	writeField(h, req.Model)
+	g := governedRequest{Model: req.Model, Tools: req.Tools, ToolChoice: req.ToolChoice}
 	for _, m := range req.Messages {
-		writeField(h, m.Role)
-		writeField(h, m.ContentString())
+		g.Messages = append(g.Messages, governedMessage{
+			Role: m.Role, Content: m.ContentString(),
+			ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID,
+		})
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return digestJSON(g)
+}
+
+// governedChoice is the governed projection of one response choice: the message
+// text AND any tool calls the model emitted (a tool-only response has no text
+// but must still bind its action surface).
+type governedChoice struct {
+	Content      string     `json:"content"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	FinishReason string     `json:"finish_reason"`
 }
 
 // ResponseContentDigest returns a sha256-hex digest over the response's governed
-// content: each choice's message text. "" when there is no content.
+// surface: each choice's text + tool calls + finish reason. "" when there are no
+// choices (e.g. an error or an empty/streamed-unavailable response).
 func ResponseContentDigest(resp *ChatCompletionResponse) string {
 	if resp == nil || len(resp.Choices) == 0 {
 		return ""
 	}
-	h := sha256.New()
+	gs := make([]governedChoice, 0, len(resp.Choices))
 	for _, c := range resp.Choices {
-		writeField(h, c.Message.ContentString())
+		gs = append(gs, governedChoice{
+			Content: c.Message.ContentString(), ToolCalls: c.Message.ToolCalls,
+			FinishReason: c.FinishReason,
+		})
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return digestJSON(gs)
 }
 
-// writeField length-frames a string into the hash so concatenation is
-// unambiguous (len-prefix prevents "ab"+"c" colliding with "a"+"bc").
-func writeField(h interface{ Write([]byte) (int, error) }, s string) {
-	var lenBuf [8]byte
-	n := uint64(len(s))
-	for i := 0; i < 8; i++ {
-		lenBuf[i] = byte(n >> (8 * (7 - i)))
+// digestJSON marshals v to canonical JSON and returns its sha256 hex.
+func digestJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
 	}
-	_, _ = h.Write(lenBuf[:])
-	_, _ = h.Write([]byte(s))
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // GatewayHooks is the optional, generic extension surface for wrapping the proxy

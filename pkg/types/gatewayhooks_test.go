@@ -64,3 +64,25 @@ func TestGatewayHooks_NilSafe(t *testing.T) {
 		t.Fatal("empty hooks have nil funcs")
 	}
 }
+
+func TestRequestContentDigest_BindsToolSurface(t *testing.T) {
+	base := &ChatCompletionRequest{Model: "m", Messages: []Message{msg("user", "do it")}}
+	withTool := &ChatCompletionRequest{
+		Model: "m", Messages: []Message{msg("user", "do it")},
+		Tools: []Tool{{Type: "function", Function: FunctionDef{Name: "shell_exec"}}},
+	}
+	if RequestContentDigest(base) == RequestContentDigest(withTool) {
+		t.Fatal("adding a tool must change the request digest (tool surface bound)")
+	}
+}
+
+func TestResponseContentDigest_BindsToolCalls(t *testing.T) {
+	textOnly := &ChatCompletionResponse{Choices: []Choice{{Message: msg("assistant", "ok")}}}
+	withToolCall := &ChatCompletionResponse{Choices: []Choice{{Message: Message{
+		Role: "assistant", Content: msg("assistant", "").Content,
+		ToolCalls: []ToolCall{{ID: "c1", Type: "function", Function: FunctionCall{Name: "delete", Arguments: "{}"}}},
+	}}}}
+	if ResponseContentDigest(textOnly) == ResponseContentDigest(withToolCall) {
+		t.Fatal("a tool-call response must digest differently from text (action surface bound)")
+	}
+}

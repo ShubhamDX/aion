@@ -415,6 +415,46 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		tier = selectedModel.Tier
 	}
 
+	// 3b. Gateway pre-request hook (optional) — SAME enterprise policy path as
+	// the OpenAI ingress, so /v1/messages traffic cannot bypass decisions or
+	// signed evidence. A nil hook leaves behavior unchanged.
+	if h.hooks != nil && h.hooks.PreRequest != nil {
+		dec := h.hooks.PreRequest(types.PreRequestInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			Request:        req,
+			RequestedModel: model,
+			RoutedModel:    selectedModel.ID,
+			RoutedProvider: selectedModel.Provider,
+			Tier:           tier,
+			EstimatedCost:  h.estimatedCost(req, selectedModel),
+			RequestDigest:  types.RequestContentDigest(req),
+		})
+		switch dec.Verdict {
+		case types.VerdictBlock:
+			w.Header().Set("X-AION-Decision", "block")
+			writeAnthropicError(w, http.StatusForbidden, "permission_error", decisionMessage(dec, "request blocked by policy"))
+			return
+		case types.VerdictHold:
+			w.Header().Set("X-AION-Decision", "hold")
+			writeAnthropicError(w, http.StatusAccepted, "approval_required", decisionMessage(dec, "request held for approval"))
+			return
+		case types.VerdictRoute:
+			if dec.RoutedModelOverride != "" && dec.RoutedModelOverride != selectedModel.ID {
+				m, err := h.router.FindModel(dec.RoutedModelOverride)
+				if err != nil {
+					w.Header().Set("X-AION-Decision", "route_error")
+					writeAnthropicError(w, http.StatusInternalServerError, "api_error",
+						"policy routed to unknown model: "+dec.RoutedModelOverride)
+					return
+				}
+				selectedModel = m
+				tier = m.Tier
+				w.Header().Set("X-AION-Decision", "route")
+			}
+		}
+	}
+
 	// 4. Budget check.
 	if keyInfo != nil && h.budget != nil {
 		if err := h.budget.Check(ctx, keyInfo.Key, keyInfo.DailyLimitUSD, keyInfo.MonthlyLimitUSD); err != nil {
@@ -510,6 +550,28 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// Record budget spend.
 	if keyInfo != nil && h.budget != nil && costUSD > 0 {
 		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	}
+
+	// Gateway post-response hook (optional): record signed evidence for the
+	// Anthropic-ingress request, same as the OpenAI path.
+	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
+		h.hooks.PostResponse(types.PostResponseInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: model,
+			RoutedModel:    selectedModel.ID,
+			RoutedProvider: selectedModel.Provider,
+			Tier:           tier,
+			InputTokens:    resp.ChatResponse.Usage.PromptTokens,
+			OutputTokens:   resp.ChatResponse.Usage.CompletionTokens,
+			CostUSD:        costUSD,
+			SavingsUSD:     savingsUSD,
+			LatencyMS:      time.Since(start).Milliseconds(),
+			StatusCode:     resp.StatusCode,
+			Stream:         false,
+			RequestDigest:  types.RequestContentDigest(req),
+			ResponseDigest: types.ResponseContentDigest(resp.ChatResponse),
+		})
 	}
 
 	// Translate OpenAI response -> Anthropic response.
@@ -752,6 +814,28 @@ func (h *Handler) handleAnthropicStream(
 	// Record budget spend.
 	if keyInfo != nil && h.budget != nil && costUSD > 0 {
 		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	}
+
+	// Gateway post-response hook (optional). Streamed content is not reassembled,
+	// so the output digest is empty (correlation-only output anchor).
+	if h.hooks != nil && h.hooks.PostResponse != nil {
+		h.hooks.PostResponse(types.PostResponseInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: req.Model,
+			RoutedModel:    model.ID,
+			RoutedProvider: model.Provider,
+			Tier:           tier,
+			InputTokens:    totalUsage.PromptTokens,
+			OutputTokens:   totalUsage.CompletionTokens,
+			CostUSD:        costUSD,
+			SavingsUSD:     savingsUSD,
+			LatencyMS:      time.Since(start).Milliseconds(),
+			StatusCode:     http.StatusOK,
+			Stream:         true,
+			RequestDigest:  types.RequestContentDigest(req),
+			ResponseDigest: "",
+		})
 	}
 }
 
