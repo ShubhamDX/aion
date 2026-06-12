@@ -23,6 +23,7 @@ import (
 	"github.com/ShubhamDX/aion/internal/telemetry"
 	"github.com/ShubhamDX/aion/internal/types"
 	pkgclassifier "github.com/ShubhamDX/aion/pkg/classifier"
+	pkgtypes "github.com/ShubhamDX/aion/pkg/types"
 )
 
 // Version is the application version string. Set via ldflags at build time.
@@ -36,6 +37,11 @@ type Options struct {
 
 	// ConfigPath is the path to the YAML configuration file.
 	ConfigPath string
+
+	// GatewayHooks is the optional pre-request / post-response extension surface
+	// (an embedding product wraps the proxy request lifecycle here). nil leaves
+	// OSS behavior unchanged.
+	GatewayHooks *pkgtypes.GatewayHooks
 }
 
 // App encapsulates the full AION gateway runtime.
@@ -148,6 +154,9 @@ func Build(opts Options) (*App, error) {
 
 	// Build proxy handler.
 	proxyHandler := proxy.NewHandler(cls, rtr, registry, budgetMgr, pricingTable, recorder)
+	if opts.GatewayHooks != nil {
+		proxyHandler.SetGatewayHooks(opts.GatewayHooks)
+	}
 
 	// Build route handlers.
 	handlers := server.RouteHandlers{

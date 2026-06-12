@@ -45,18 +45,18 @@ type anthropicIngressTool struct {
 
 // anthropicIngressResponse is the Anthropic Messages API non-streaming response.
 type anthropicIngressResponse struct {
-	ID           string                        `json:"id"`
-	Type         string                        `json:"type"` // "message"
-	Role         string                        `json:"role"` // "assistant"
+	ID           string                         `json:"id"`
+	Type         string                         `json:"type"` // "message"
+	Role         string                         `json:"role"` // "assistant"
 	Content      []anthropicIngressContentBlock `json:"content"`
-	Model        string                        `json:"model"`
-	StopReason   string                        `json:"stop_reason"`
-	StopSequence *string                       `json:"stop_sequence"`
-	Usage        anthropicIngressUsage         `json:"usage"`
+	Model        string                         `json:"model"`
+	StopReason   string                         `json:"stop_reason"`
+	StopSequence *string                        `json:"stop_sequence"`
+	Usage        anthropicIngressUsage          `json:"usage"`
 }
 
 type anthropicIngressContentBlock struct {
-	Type  string          `json:"type"`            // "text" or "tool_use"
+	Type  string          `json:"type"` // "text" or "tool_use"
 	Text  string          `json:"text,omitempty"`
 	ID    string          `json:"id,omitempty"`    // tool_use
 	Name  string          `json:"name,omitempty"`  // tool_use
@@ -145,9 +145,9 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 		if json.Unmarshal(m.Content, &blocks) == nil && len(blocks) > 0 {
 			// Check if this is a tool_result message.
 			var firstBlock struct {
-				Type       string `json:"type"`
-				ToolUseID  string `json:"tool_use_id"`
-				Content    json.RawMessage `json:"content"`
+				Type      string          `json:"type"`
+				ToolUseID string          `json:"tool_use_id"`
+				Content   json.RawMessage `json:"content"`
 			}
 			if json.Unmarshal(blocks[0], &firstBlock) == nil && firstBlock.Type == "tool_result" {
 				// Each tool_result block becomes a separate tool-role message.

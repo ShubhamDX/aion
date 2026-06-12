@@ -131,4 +131,23 @@ func (h *Handler) handleStream(
 	if keyInfo != nil && h.budget != nil && costUSD > 0 {
 		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
 	}
+
+	// Gateway post-response hook (optional).
+	if h.hooks != nil && h.hooks.PostResponse != nil {
+		h.hooks.PostResponse(types.PostResponseInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: req.Model,
+			RoutedModel:    model.ID,
+			RoutedProvider: model.Provider,
+			Tier:           tier,
+			InputTokens:    totalUsage.PromptTokens,
+			OutputTokens:   totalUsage.CompletionTokens,
+			CostUSD:        costUSD,
+			SavingsUSD:     savingsUSD,
+			LatencyMS:      time.Since(start).Milliseconds(),
+			StatusCode:     http.StatusOK,
+			Stream:         true,
+		})
+	}
 }

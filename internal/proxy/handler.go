@@ -33,7 +33,14 @@ type Handler struct {
 	budget     BudgetChecker
 	pricing    *pricing.Table
 	recorder   *telemetry.Recorder
+	// hooks is the optional gateway extension surface (an embedding product wraps
+	// the request lifecycle here). nil leaves OSS behavior unchanged.
+	hooks *types.GatewayHooks
 }
+
+// SetGatewayHooks attaches the optional pre-request / post-response hooks. nil
+// hooks (or nil func fields) are no-ops.
+func (h *Handler) SetGatewayHooks(hooks *types.GatewayHooks) { h.hooks = hooks }
 
 // NewHandler creates a new proxy Handler. budget and recorder may be nil; when
 // nil the corresponding functionality is silently skipped.
@@ -120,6 +127,41 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tier = selectedModel.Tier
+	}
+
+	// 2b. Gateway pre-request hook (optional). An embedding product runs its
+	// decision here: block, hold for approval, or override the routed model
+	// (cheaper-safe routing). A nil hook leaves behavior unchanged.
+	if h.hooks != nil && h.hooks.PreRequest != nil {
+		estCost := h.estimatedCost(&req, selectedModel)
+		dec := h.hooks.PreRequest(types.PreRequestInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			Request:        &req,
+			RequestedModel: model,
+			RoutedModel:    selectedModel.ID,
+			RoutedProvider: selectedModel.Provider,
+			Tier:           tier,
+			EstimatedCost:  estCost,
+		})
+		switch dec.Verdict {
+		case types.VerdictBlock:
+			w.Header().Set("X-AION-Decision", "block")
+			writeError(w, http.StatusForbidden, "policy_block", decisionMessage(dec, "request blocked by policy"))
+			return
+		case types.VerdictHold:
+			w.Header().Set("X-AION-Decision", "hold")
+			writeError(w, http.StatusAccepted, "approval_required", decisionMessage(dec, "request held for approval"))
+			return
+		case types.VerdictRoute:
+			if dec.RoutedModelOverride != "" && dec.RoutedModelOverride != selectedModel.ID {
+				if m, err := h.router.FindModel(dec.RoutedModelOverride); err == nil {
+					selectedModel = m
+					tier = m.Tier
+					w.Header().Set("X-AION-Decision", "route")
+				}
+			}
+		}
 	}
 
 	// 3. Budget check.
@@ -217,10 +259,58 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
 	}
 
+	// Gateway post-response hook (optional): the embedding product records the
+	// signed evidence row for this completed request.
+	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
+		h.hooks.PostResponse(types.PostResponseInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: model,
+			RoutedModel:    selectedModel.ID,
+			RoutedProvider: selectedModel.Provider,
+			Tier:           tier,
+			InputTokens:    resp.ChatResponse.Usage.PromptTokens,
+			OutputTokens:   resp.ChatResponse.Usage.CompletionTokens,
+			CostUSD:        costUSD,
+			SavingsUSD:     savingsUSD,
+			LatencyMS:      time.Since(start).Milliseconds(),
+			StatusCode:     resp.StatusCode,
+			Stream:         false,
+		})
+	}
+
 	// Write response.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	json.NewEncoder(w).Encode(resp.ChatResponse)
+}
+
+// estimatedCost estimates the cost of a request against a model before dispatch,
+// using a rough token estimate from the prompt. Used to feed the pre-request
+// budget decision; the post-response path records actual cost.
+func (h *Handler) estimatedCost(req *types.ChatCompletionRequest, model *router.ModelOption) float64 {
+	if h.pricing == nil || model == nil {
+		return 0
+	}
+	// Rough prompt-token estimate: ~4 chars/token across all message content.
+	chars := 0
+	for _, m := range req.Messages {
+		chars += len(m.ContentString())
+	}
+	promptTokens := chars / 4
+	outTokens := 256
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		outTokens = *req.MaxTokens
+	}
+	return h.pricing.EstimateCost(model.ID, promptTokens, outTokens)
+}
+
+// decisionMessage returns the decision's client-facing message, or a default.
+func decisionMessage(d types.PreRequestDecision, def string) string {
+	if d.Message != "" {
+		return d.Message
+	}
+	return def
 }
 
 // writeError writes an OpenAI-compatible JSON error response.
