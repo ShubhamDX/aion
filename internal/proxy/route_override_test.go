@@ -75,6 +75,26 @@ func TestResolveRouteOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("pinned model from disallowed provider fails closed", func(t *testing.T) {
+		// pricey-haiku is a bedrock model; allowlist is vertex-only -> must refuse,
+		// not send traffic to bedrock.
+		_, _, err := h.resolveRouteOverride(types.PreRequestDecision{
+			RoutedModelOverride: "pricey-haiku", RoutedAllowedProviders: []string{"vertex"},
+		}, sonnet)
+		if err == nil {
+			t.Fatal("pinned model outside the allowlist must fail closed")
+		}
+	})
+
+	t.Run("pinned model within allowlist passes", func(t *testing.T) {
+		m, changed, err := h.resolveRouteOverride(types.PreRequestDecision{
+			RoutedModelOverride: "pricey-haiku", RoutedAllowedProviders: []string{"bedrock"},
+		}, sonnet)
+		if err != nil || !changed || m.ID != "pricey-haiku" {
+			t.Fatalf("got %q changed=%v err=%v", safeID(m), changed, err)
+		}
+	})
+
 	t.Run("empty tier with no models fails closed", func(t *testing.T) {
 		if _, _, err := h.resolveRouteOverride(types.PreRequestDecision{RoutedTierOverride: 3}, sonnet); err == nil {
 			t.Fatal("want error: no tier-3 model")
@@ -117,6 +137,64 @@ func TestResolveRouteOverrideHealthAware(t *testing.T) {
 	if m.ID != "pricey-haiku" {
 		t.Fatalf("got %q want pricey-haiku (cheapest healthy)", m.ID)
 	}
+}
+
+func safeID(m *router.ModelOption) string {
+	if m == nil {
+		return "<nil>"
+	}
+	return m.ID
+}
+
+// dupIDHandler has the SAME model id under two providers, so a pinned override
+// by id alone is ambiguous unless an allowlist narrows it to one.
+func dupIDHandler() *Handler {
+	cfg := &config.Config{}
+	cfg.Providers.Bedrock = &config.ProviderConfig{
+		Models: []config.ModelConfig{{ID: "shared-model", Tier: 1, InputPricePer1M: 1, OutputPricePer1M: 5}},
+	}
+	cfg.Providers.Vertex = &config.ProviderConfig{
+		Models: []config.ModelConfig{{ID: "shared-model", Tier: 1, InputPricePer1M: 1, OutputPricePer1M: 5}},
+	}
+	cfg.Providers.Anthropic = &config.ProviderConfig{
+		Models: []config.ModelConfig{{ID: "sonnet", Tier: 2, InputPricePer1M: 3, OutputPricePer1M: 15}},
+	}
+	return &Handler{router: router.NewRouter(cfg, nil)}
+}
+
+func TestResolveRouteOverrideAmbiguousPinnedModel(t *testing.T) {
+	h := dupIDHandler()
+	sonnet, _ := h.router.FindModel("sonnet")
+
+	t.Run("same id under two providers is ambiguous without an allowlist", func(t *testing.T) {
+		_, _, err := h.resolveRouteOverride(types.PreRequestDecision{RoutedModelOverride: "shared-model"}, sonnet)
+		if err == nil {
+			t.Fatal("ambiguous pinned model id must fail closed")
+		}
+	})
+
+	t.Run("an allowlist that selects ONE provider disambiguates", func(t *testing.T) {
+		m, changed, err := h.resolveRouteOverride(types.PreRequestDecision{
+			RoutedModelOverride: "shared-model", RoutedAllowedProviders: []string{"bedrock"},
+		}, sonnet)
+		if err != nil || !changed || m.Provider != "bedrock" {
+			t.Fatalf("got provider=%q changed=%v err=%v", func() string {
+				if m == nil {
+					return "<nil>"
+				}
+				return m.Provider
+			}(), changed, err)
+		}
+	})
+
+	t.Run("an allowlist still spanning both providers stays ambiguous", func(t *testing.T) {
+		_, _, err := h.resolveRouteOverride(types.PreRequestDecision{
+			RoutedModelOverride: "shared-model", RoutedAllowedProviders: []string{"bedrock", "vertex"},
+		}, sonnet)
+		if err == nil {
+			t.Fatal("allowlist spanning both providers must stay ambiguous")
+		}
+	})
 }
 
 // allowSet builds a health checker that reports the named models unhealthy.

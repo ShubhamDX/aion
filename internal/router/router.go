@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ShubhamDX/aion/internal/config"
@@ -152,6 +153,52 @@ func (r *Router) FindModel(modelID string) (*ModelOption, error) {
 		}
 	}
 	return nil, fmt.Errorf("router: model %q not found", modelID)
+}
+
+// ErrAmbiguousModel is returned when a model id maps to more than one provider
+// and the caller did not (or could not) disambiguate it. A policy that pinned a
+// model id must resolve to exactly one provider, else the provider boundary is
+// unprovable.
+var ErrAmbiguousModel = errors.New("router: model id maps to multiple providers")
+
+// FindModelConstrained resolves a model id to a SINGLE option, honoring a
+// provider allowlist. It is for policy route overrides, where the resolved
+// target must respect the embedding product's allowed_providers and must be
+// unambiguous. Rules (all fail closed):
+//   - collect every option with this id across tiers,
+//   - when allowed is non-empty, drop options whose provider is not allowed,
+//   - 0 remaining   -> ErrNoHealthyModel-style not-found (model unknown or its
+//     only provider(s) are disallowed),
+//   - >1 remaining  -> ErrAmbiguousModel (same id under two allowed providers:
+//     the provider boundary cannot be proven, so refuse),
+//   - exactly 1     -> return it.
+//
+// Health is NOT checked here: a pinned model is an explicit operator choice, so
+// an unhealthy pin surfaces downstream as a provider error rather than being
+// silently swapped. allowed nil/empty means no provider constraint (but the
+// ambiguity check still applies).
+func (r *Router) FindModelConstrained(modelID string, allowed map[string]bool) (*ModelOption, error) {
+	var matches []ModelOption
+	for _, options := range r.models {
+		for _, o := range options {
+			if o.ID != modelID {
+				continue
+			}
+			if len(allowed) > 0 && !allowed[o.Provider] {
+				continue
+			}
+			matches = append(matches, o)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("router: model %q not found among allowed providers", modelID)
+	case 1:
+		m := matches[0]
+		return &m, nil
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrAmbiguousModel, modelID)
+	}
 }
 
 // FindByProvider finds the cheapest healthy model from the named provider.

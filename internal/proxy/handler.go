@@ -317,21 +317,36 @@ func (h *Handler) estimatedCost(req *types.ChatCompletionRequest, model *router.
 
 // resolveRouteOverride resolves a VerdictRoute decision to a concrete model.
 // Precedence: an explicit RoutedModelOverride (pinned model id) wins; otherwise
-// a RoutedTierOverride routes to the cheapest healthy model in that tier from
-// THIS deployment's catalog via RouteWithFallback. It returns the resolved
+// a RoutedTierOverride routes to the cheapest healthy model in EXACTLY that tier
+// from THIS deployment's catalog (strict, no tier fallback). Both forms are
+// constrained to RoutedAllowedProviders when set. It returns the resolved
 // model, whether the route actually changed the selection, and an error that
 // the caller MUST treat as fail-closed (a policy that ordered an unresolvable
 // route cannot fall through to the original un-governed model). A decision with
 // neither field set returns (current, false, nil): a route verdict that names
 // no target is a no-op, not an error.
 func (h *Handler) resolveRouteOverride(dec types.PreRequestDecision, current *router.ModelOption) (*router.ModelOption, bool, error) {
-	if dec.RoutedModelOverride != "" {
-		if dec.RoutedModelOverride == current.ID {
-			return current, false, nil
+	// RoutedAllowedProviders constrains BOTH override forms: a pinned model and a
+	// tier target must land on an allowed provider. Empty means no constraint.
+	var allowed map[string]bool
+	if len(dec.RoutedAllowedProviders) > 0 {
+		allowed = make(map[string]bool, len(dec.RoutedAllowedProviders))
+		for _, p := range dec.RoutedAllowedProviders {
+			allowed[p] = true
 		}
-		m, err := h.router.FindModel(dec.RoutedModelOverride)
+	}
+
+	if dec.RoutedModelOverride != "" {
+		// Resolve the pinned model THROUGH the allowlist: a policy that pinned a
+		// model from a disallowed provider, or a model id that maps to more than
+		// one provider, fails closed rather than silently sending traffic off the
+		// allowed set. This closes the pinned-route provider-boundary gap.
+		m, err := h.router.FindModelConstrained(dec.RoutedModelOverride, allowed)
 		if err != nil {
-			return nil, false, fmt.Errorf("policy routed to unknown model: %s", dec.RoutedModelOverride)
+			return nil, false, fmt.Errorf("policy route to model %q: %w", dec.RoutedModelOverride, err)
+		}
+		if m.ID == current.ID && m.Provider == current.Provider {
+			return current, false, nil
 		}
 		return m, true, nil
 	}
@@ -341,13 +356,6 @@ func (h *Handler) resolveRouteOverride(dec types.PreRequestDecision, current *ro
 		// allowed providers. No tier fallback and no provider widening, so a
 		// downgrade that names tier N (and a provider set) cannot silently land
 		// on another tier or a disallowed provider.
-		var allowed map[string]bool
-		if len(dec.RoutedAllowedProviders) > 0 {
-			allowed = make(map[string]bool, len(dec.RoutedAllowedProviders))
-			for _, p := range dec.RoutedAllowedProviders {
-				allowed[p] = true
-			}
-		}
 		m, err := h.router.RouteInTier(tier, allowed)
 		if err != nil {
 			return nil, false, fmt.Errorf("policy routed to tier %d with no eligible healthy model: %w", dec.RoutedTierOverride, err)
