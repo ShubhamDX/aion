@@ -160,13 +160,31 @@ const (
 )
 
 // PreRequestDecision is the hook result. ReasonCode + LedgerRowID are surfaced
-// in response headers / logs for auditability. RoutedModelOverride is honored
-// only when Verdict == VerdictRoute.
+// in response headers / logs for auditability. RoutedModelOverride /
+// RoutedTierOverride are honored only when Verdict == VerdictRoute.
 type PreRequestDecision struct {
-	Verdict             PreRequestVerdict
-	ReasonCode          string
+	Verdict    PreRequestVerdict
+	ReasonCode string
+	// RoutedModelOverride pins a specific model ID. When set it wins over
+	// RoutedTierOverride. The proxy re-resolves it via the router and fails
+	// closed if the model is unknown.
 	RoutedModelOverride string
-	LedgerRowID         string
+	// RoutedTierOverride routes to a tier rather than a fixed model: the proxy
+	// picks the cheapest healthy model in EXACTLY that tier from THIS
+	// deployment's catalog (strict, no tier fallback), so each deployment
+	// downgrades to its own providers without the policy naming a model ID. 0
+	// means unset. Ignored when RoutedModelOverride is set. If the tier has no
+	// eligible healthy model the route fails closed (it does NOT widen to
+	// another tier).
+	RoutedTierOverride int
+	// RoutedAllowedProviders, when non-empty, constrains BOTH route forms to
+	// models from these providers only. It mirrors the embedding product's
+	// provider allowlist: a tier downgrade cannot pick a cheaper model from a
+	// disallowed provider, and a pinned RoutedModelOverride is resolved through
+	// the allowlist so it cannot land on a disallowed (or ambiguous) provider.
+	// Empty means no constraint.
+	RoutedAllowedProviders []string
+	LedgerRowID            string
 	// Message is the client-facing error text on Block / Hold.
 	Message string
 }
