@@ -337,9 +337,20 @@ func (h *Handler) resolveRouteOverride(dec types.PreRequestDecision, current *ro
 	}
 	if dec.RoutedTierOverride > 0 {
 		tier := types.Tier(dec.RoutedTierOverride)
-		m, err := h.router.RouteWithFallback(tier)
+		// Strict: select within EXACTLY this tier, constrained to the policy's
+		// allowed providers. No tier fallback and no provider widening, so a
+		// downgrade that names tier N (and a provider set) cannot silently land
+		// on another tier or a disallowed provider.
+		var allowed map[string]bool
+		if len(dec.RoutedAllowedProviders) > 0 {
+			allowed = make(map[string]bool, len(dec.RoutedAllowedProviders))
+			for _, p := range dec.RoutedAllowedProviders {
+				allowed[p] = true
+			}
+		}
+		m, err := h.router.RouteInTier(tier, allowed)
 		if err != nil {
-			return nil, false, fmt.Errorf("policy routed to tier %d with no healthy model: %w", dec.RoutedTierOverride, err)
+			return nil, false, fmt.Errorf("policy routed to tier %d with no eligible healthy model: %w", dec.RoutedTierOverride, err)
 		}
 		if m.ID == current.ID {
 			return current, false, nil

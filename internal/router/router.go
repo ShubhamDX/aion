@@ -115,6 +115,33 @@ func (r *Router) RouteWithFallback(tier types.Tier) (*ModelOption, error) {
 	return result, nil
 }
 
+// RouteInTier selects the cheapest healthy model in EXACTLY the given tier,
+// with no fallback to adjacent tiers. When allowed is non-empty it is a
+// provider allowlist: only models whose provider is in the set are eligible. A
+// nil/empty allowed means no provider constraint. Returns ErrNoHealthyModel
+// when the tier has no eligible healthy model, so a policy that pinned a tier
+// (or a tier + provider set) fails closed rather than silently widening to
+// another tier or provider.
+func (r *Router) RouteInTier(tier types.Tier, allowed map[string]bool) (*ModelOption, error) {
+	options := r.models[tier]
+	if len(options) == 0 {
+		return nil, ErrNoHealthyModel
+	}
+	if len(allowed) > 0 {
+		filtered := make([]ModelOption, 0, len(options))
+		for _, o := range options {
+			if allowed[o.Provider] {
+				filtered = append(filtered, o)
+			}
+		}
+		options = filtered
+	}
+	if len(options) == 0 {
+		return nil, ErrNoHealthyModel
+	}
+	return r.strategy.Select(options, r.health)
+}
+
 // FindModel looks up a specific model by ID across all tiers.
 func (r *Router) FindModel(modelID string) (*ModelOption, error) {
 	for _, options := range r.models {

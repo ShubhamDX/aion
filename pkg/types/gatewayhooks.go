@@ -170,12 +170,20 @@ type PreRequestDecision struct {
 	// closed if the model is unknown.
 	RoutedModelOverride string
 	// RoutedTierOverride routes to a tier rather than a fixed model: the proxy
-	// picks the cheapest healthy model in that tier from THIS deployment's
-	// catalog (via RouteWithFallback), so each deployment downgrades to its own
-	// providers without the policy naming a model ID. 0 means unset. Ignored
-	// when RoutedModelOverride is set.
+	// picks the cheapest healthy model in EXACTLY that tier from THIS
+	// deployment's catalog (strict, no tier fallback), so each deployment
+	// downgrades to its own providers without the policy naming a model ID. 0
+	// means unset. Ignored when RoutedModelOverride is set. If the tier has no
+	// eligible healthy model the route fails closed (it does NOT widen to
+	// another tier).
 	RoutedTierOverride int
-	LedgerRowID        string
+	// RoutedAllowedProviders, when non-empty, constrains a RoutedTierOverride to
+	// models from these providers only. It mirrors the embedding product's
+	// provider allowlist so a tier downgrade cannot escape it by picking a
+	// cheaper model from a disallowed provider. Empty means no constraint.
+	// Ignored unless RoutedTierOverride is set.
+	RoutedAllowedProviders []string
+	LedgerRowID            string
 	// Message is the client-facing error text on Block / Hold.
 	Message string
 }
