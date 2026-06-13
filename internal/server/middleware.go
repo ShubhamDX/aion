@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -142,8 +143,11 @@ func AuthMiddleware(validator *apikey.Validator) func(http.Handler) http.Handler
 				return
 			}
 
-			// Health endpoint bypasses auth.
-			if r.URL.Path == "/health" {
+			// Health + readiness probes bypass auth. /health is liveness; the
+			// /healthz/ prefix covers readiness/recovery/license-status probes,
+			// which expose no secrets and must be reachable by load balancers and
+			// operators without a key.
+			if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/healthz/") {
 				next.ServeHTTP(w, r)
 				return
 			}

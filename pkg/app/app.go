@@ -42,6 +42,13 @@ type Options struct {
 	// (an embedding product wraps the proxy request lifecycle here). nil leaves
 	// OSS behavior unchanged.
 	GatewayHooks *pkgtypes.GatewayHooks
+
+	// ExtraRoutes, if set, is called with the gateway mux after the built-in
+	// routes are registered and before the middleware chain wraps it, so an
+	// embedding product can mount additional handlers (e.g. a license-status
+	// probe or an approval-queue API). Routes under /healthz/ bypass auth. nil
+	// leaves OSS behavior unchanged.
+	ExtraRoutes func(mux *http.ServeMux)
 }
 
 // App encapsulates the full AION gateway runtime.
@@ -171,6 +178,12 @@ func Build(opts Options) (*App, error) {
 
 	// Build HTTP mux.
 	mux := server.NewRouter(handlers)
+
+	// Let an embedding product mount extra routes (license status, approval API)
+	// before the middleware chain wraps the mux.
+	if opts.ExtraRoutes != nil {
+		opts.ExtraRoutes(mux)
+	}
 
 	// Build middleware chain.
 	var validator *apikey.Validator
