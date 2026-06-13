@@ -177,11 +177,12 @@ type PreRequestDecision struct {
 	// eligible healthy model the route fails closed (it does NOT widen to
 	// another tier).
 	RoutedTierOverride int
-	// RoutedAllowedProviders, when non-empty, constrains a RoutedTierOverride to
+	// RoutedAllowedProviders, when non-empty, constrains BOTH route forms to
 	// models from these providers only. It mirrors the embedding product's
-	// provider allowlist so a tier downgrade cannot escape it by picking a
-	// cheaper model from a disallowed provider. Empty means no constraint.
-	// Ignored unless RoutedTierOverride is set.
+	// provider allowlist: a tier downgrade cannot pick a cheaper model from a
+	// disallowed provider, and a pinned RoutedModelOverride is resolved through
+	// the allowlist so it cannot land on a disallowed (or ambiguous) provider.
+	// Empty means no constraint.
 	RoutedAllowedProviders []string
 	LedgerRowID            string
 	// Message is the client-facing error text on Block / Hold.
