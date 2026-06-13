@@ -155,17 +155,16 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusAccepted, "approval_required", decisionMessage(dec, "request held for approval"))
 			return
 		case types.VerdictRoute:
-			if dec.RoutedModelOverride != "" && dec.RoutedModelOverride != selectedModel.ID {
-				m, err := h.router.FindModel(dec.RoutedModelOverride)
-				if err != nil {
-					// Fail closed: a policy that ordered a route to a model the
-					// router does not know cannot be silently ignored (that would
-					// let the request proceed on the un-governed original route).
-					w.Header().Set("X-AION-Decision", "route_error")
-					writeError(w, http.StatusInternalServerError, "route_override_failed",
-						"policy routed to unknown model: "+dec.RoutedModelOverride)
-					return
-				}
+			m, changed, err := h.resolveRouteOverride(dec, selectedModel)
+			if err != nil {
+				// Fail closed: a policy that ordered an unresolvable route cannot
+				// be silently ignored (that would let the request proceed on the
+				// un-governed original route).
+				w.Header().Set("X-AION-Decision", "route_error")
+				writeError(w, http.StatusInternalServerError, "route_override_failed", err.Error())
+				return
+			}
+			if changed {
 				selectedModel = m
 				tier = m.Tier
 				w.Header().Set("X-AION-Decision", "route")
@@ -314,6 +313,40 @@ func (h *Handler) estimatedCost(req *types.ChatCompletionRequest, model *router.
 		outTokens = *req.MaxTokens
 	}
 	return h.pricing.EstimateCost(model.ID, promptTokens, outTokens)
+}
+
+// resolveRouteOverride resolves a VerdictRoute decision to a concrete model.
+// Precedence: an explicit RoutedModelOverride (pinned model id) wins; otherwise
+// a RoutedTierOverride routes to the cheapest healthy model in that tier from
+// THIS deployment's catalog via RouteWithFallback. It returns the resolved
+// model, whether the route actually changed the selection, and an error that
+// the caller MUST treat as fail-closed (a policy that ordered an unresolvable
+// route cannot fall through to the original un-governed model). A decision with
+// neither field set returns (current, false, nil): a route verdict that names
+// no target is a no-op, not an error.
+func (h *Handler) resolveRouteOverride(dec types.PreRequestDecision, current *router.ModelOption) (*router.ModelOption, bool, error) {
+	if dec.RoutedModelOverride != "" {
+		if dec.RoutedModelOverride == current.ID {
+			return current, false, nil
+		}
+		m, err := h.router.FindModel(dec.RoutedModelOverride)
+		if err != nil {
+			return nil, false, fmt.Errorf("policy routed to unknown model: %s", dec.RoutedModelOverride)
+		}
+		return m, true, nil
+	}
+	if dec.RoutedTierOverride > 0 {
+		tier := types.Tier(dec.RoutedTierOverride)
+		m, err := h.router.RouteWithFallback(tier)
+		if err != nil {
+			return nil, false, fmt.Errorf("policy routed to tier %d with no healthy model: %w", dec.RoutedTierOverride, err)
+		}
+		if m.ID == current.ID {
+			return current, false, nil
+		}
+		return m, true, nil
+	}
+	return current, false, nil
 }
 
 // decisionMessage returns the decision's client-facing message, or a default.

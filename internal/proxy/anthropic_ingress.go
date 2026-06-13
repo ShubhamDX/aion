@@ -440,14 +440,13 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			writeAnthropicError(w, http.StatusAccepted, "approval_required", decisionMessage(dec, "request held for approval"))
 			return
 		case types.VerdictRoute:
-			if dec.RoutedModelOverride != "" && dec.RoutedModelOverride != selectedModel.ID {
-				m, err := h.router.FindModel(dec.RoutedModelOverride)
-				if err != nil {
-					w.Header().Set("X-AION-Decision", "route_error")
-					writeAnthropicError(w, http.StatusInternalServerError, "api_error",
-						"policy routed to unknown model: "+dec.RoutedModelOverride)
-					return
-				}
+			m, changed, err := h.resolveRouteOverride(dec, selectedModel)
+			if err != nil {
+				w.Header().Set("X-AION-Decision", "route_error")
+				writeAnthropicError(w, http.StatusInternalServerError, "api_error", err.Error())
+				return
+			}
+			if changed {
 				selectedModel = m
 				tier = m.Tier
 				w.Header().Set("X-AION-Decision", "route")
