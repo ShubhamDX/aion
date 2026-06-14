@@ -30,6 +30,7 @@ func (h *Handler) handleStream(
 	keyInfo *apikey.KeyInfo,
 	requestID string,
 	start time.Time,
+	sessionMaterial types.SessionMaterial,
 ) {
 	ctx := r.Context()
 
@@ -125,24 +126,27 @@ func (h *Handler) handleStream(
 
 	// Gateway post-response hook (optional).
 	if h.hooks != nil && h.hooks.PostResponse != nil {
+		// Streaming: the response body is not reassembled, so the next-turn prefix
+		// digest stays "" (we do NOT buffer the stream to compute it). Stickiness
+		// for the NEXT turn safe-degrades; this turn's session + prefix material is
+		// still available from the request.
 		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
-			RequestID:      requestID,
-			PrincipalID:    keyIDFromInfo(keyInfo),
-			RequestedModel: req.Model,
-			RoutedModel:    model.ID,
-			RoutedProvider: model.Provider,
-			Tier:           tier,
-			InputTokens:    totalUsage.PromptTokens,
-			OutputTokens:   totalUsage.CompletionTokens,
-			CostUSD:        costUSD,
-			SavingsUSD:     savingsUSD,
-			LatencyMS:      time.Since(start).Milliseconds(),
-			StatusCode:     http.StatusOK,
-			Stream:         true,
-			RequestDigest:  types.RequestContentDigest(req),
-			// Streamed response content is not reassembled here, so the output
-			// digest is empty; the input digest still binds the governed prompt.
-			ResponseDigest: "",
+			RequestID:       requestID,
+			PrincipalID:     keyIDFromInfo(keyInfo),
+			RequestedModel:  req.Model,
+			RoutedModel:     model.ID,
+			RoutedProvider:  model.Provider,
+			Tier:            tier,
+			InputTokens:     totalUsage.PromptTokens,
+			OutputTokens:    totalUsage.CompletionTokens,
+			CostUSD:         costUSD,
+			SavingsUSD:      savingsUSD,
+			LatencyMS:       time.Since(start).Milliseconds(),
+			StatusCode:      http.StatusOK,
+			Stream:          true,
+			RequestDigest:   types.RequestContentDigest(req),
+			ResponseDigest:  "",
+			SessionMaterial: sessionMaterial,
 		}, totalUsage, costBreakdown))
 	}
 }

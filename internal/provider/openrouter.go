@@ -42,9 +42,7 @@ func (p *OpenRouterProvider) Name() string { return "openrouter" }
 
 // Send sends a non-streaming chat completion request to OpenRouter.
 func (p *OpenRouterProvider) Send(ctx context.Context, req *types.ChatCompletionRequest, model string) (*Response, error) {
-	payload := *req
-	payload.Model = model
-	payload.Stream = false
+	payload := upstreamPayload(req, model, false)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -81,9 +79,7 @@ func (p *OpenRouterProvider) Send(ctx context.Context, req *types.ChatCompletion
 
 // SendStream sends a streaming chat completion request to OpenRouter and returns a StreamReader.
 func (p *OpenRouterProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
-	payload := *req
-	payload.Model = model
-	payload.Stream = true
+	payload := upstreamPayload(req, model, true)
 
 	body, err := json.Marshal(payload)
 	if err != nil {

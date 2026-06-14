@@ -426,17 +426,22 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// 3b. Gateway pre-request hook (optional) — SAME enterprise policy path as
 	// the OpenAI ingress, so /v1/messages traffic cannot bypass decisions or
 	// signed evidence. A nil hook leaves behavior unchanged.
+	sessionMaterial := types.SessionMaterialFromRequest(req, r.Header.Get(sessionIDHeader))
+	// Material extracted; scrub the raw session id so it never reaches the hook
+	// (digests only) or an upstream provider.
+	types.ScrubSessionID(req)
 	if h.hooks != nil && h.hooks.PreRequest != nil {
 		dec := h.hooks.PreRequest(types.PreRequestInput{
-			RequestID:      requestID,
-			PrincipalID:    keyIDFromInfo(keyInfo),
-			Request:        req,
-			RequestedModel: model,
-			RoutedModel:    selectedModel.ID,
-			RoutedProvider: selectedModel.Provider,
-			Tier:           tier,
-			EstimatedCost:  h.estimatedCost(req, selectedModel),
-			RequestDigest:  types.RequestContentDigest(req),
+			RequestID:       requestID,
+			PrincipalID:     keyIDFromInfo(keyInfo),
+			Request:         req,
+			RequestedModel:  model,
+			RoutedModel:     selectedModel.ID,
+			RoutedProvider:  selectedModel.Provider,
+			Tier:            tier,
+			EstimatedCost:   h.estimatedCost(req, selectedModel),
+			RequestDigest:   types.RequestContentDigest(req),
+			SessionMaterial: sessionMaterial,
 		})
 		switch dec.Verdict {
 		case types.VerdictBlock:
@@ -497,7 +502,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 7. Dispatch — streaming or non-streaming.
 	if req.Stream {
-		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start)
+		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)
 		return
 	}
 
@@ -552,22 +557,25 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// Gateway post-response hook (optional): record signed evidence for the
 	// Anthropic-ingress request, same as the OpenAI path.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
+		postMaterial := sessionMaterial
+		postMaterial.NextCachePrefixMaterialSHA256 = types.NextCachePrefixMaterial(req, resp.ChatResponse)
 		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
-			RequestID:      requestID,
-			PrincipalID:    keyIDFromInfo(keyInfo),
-			RequestedModel: model,
-			RoutedModel:    selectedModel.ID,
-			RoutedProvider: selectedModel.Provider,
-			Tier:           tier,
-			InputTokens:    resp.ChatResponse.Usage.PromptTokens,
-			OutputTokens:   resp.ChatResponse.Usage.CompletionTokens,
-			CostUSD:        costUSD,
-			SavingsUSD:     savingsUSD,
-			LatencyMS:      time.Since(start).Milliseconds(),
-			StatusCode:     resp.StatusCode,
-			Stream:         false,
-			RequestDigest:  types.RequestContentDigest(req),
-			ResponseDigest: types.ResponseContentDigest(resp.ChatResponse),
+			RequestID:       requestID,
+			PrincipalID:     keyIDFromInfo(keyInfo),
+			RequestedModel:  model,
+			RoutedModel:     selectedModel.ID,
+			RoutedProvider:  selectedModel.Provider,
+			Tier:            tier,
+			InputTokens:     resp.ChatResponse.Usage.PromptTokens,
+			OutputTokens:    resp.ChatResponse.Usage.CompletionTokens,
+			CostUSD:         costUSD,
+			SavingsUSD:      savingsUSD,
+			LatencyMS:       time.Since(start).Milliseconds(),
+			StatusCode:      resp.StatusCode,
+			Stream:          false,
+			RequestDigest:   types.RequestContentDigest(req),
+			ResponseDigest:  types.ResponseContentDigest(resp.ChatResponse),
+			SessionMaterial: postMaterial,
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
 
@@ -595,6 +603,7 @@ func (h *Handler) handleAnthropicStream(
 	keyInfo *apikey.KeyInfo,
 	requestID string,
 	start time.Time,
+	sessionMaterial types.SessionMaterial,
 ) {
 	ctx := r.Context()
 
@@ -806,22 +815,24 @@ func (h *Handler) handleAnthropicStream(
 	// Gateway post-response hook (optional). Streamed content is not reassembled,
 	// so the output digest is empty (correlation-only output anchor).
 	if h.hooks != nil && h.hooks.PostResponse != nil {
+		// Streaming: next-turn prefix digest stays "" (stream not buffered).
 		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
-			RequestID:      requestID,
-			PrincipalID:    keyIDFromInfo(keyInfo),
-			RequestedModel: req.Model,
-			RoutedModel:    model.ID,
-			RoutedProvider: model.Provider,
-			Tier:           tier,
-			InputTokens:    totalUsage.PromptTokens,
-			OutputTokens:   totalUsage.CompletionTokens,
-			CostUSD:        costUSD,
-			SavingsUSD:     savingsUSD,
-			LatencyMS:      time.Since(start).Milliseconds(),
-			StatusCode:     http.StatusOK,
-			Stream:         true,
-			RequestDigest:  types.RequestContentDigest(req),
-			ResponseDigest: "",
+			RequestID:       requestID,
+			PrincipalID:     keyIDFromInfo(keyInfo),
+			RequestedModel:  req.Model,
+			RoutedModel:     model.ID,
+			RoutedProvider:  model.Provider,
+			Tier:            tier,
+			InputTokens:     totalUsage.PromptTokens,
+			OutputTokens:    totalUsage.CompletionTokens,
+			CostUSD:         costUSD,
+			SavingsUSD:      savingsUSD,
+			LatencyMS:       time.Since(start).Milliseconds(),
+			StatusCode:      http.StatusOK,
+			Stream:          true,
+			RequestDigest:   types.RequestContentDigest(req),
+			ResponseDigest:  "",
+			SessionMaterial: sessionMaterial,
 		}, totalUsage, costBreakdown))
 	}
 }

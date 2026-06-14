@@ -40,9 +40,7 @@ func (p *LocalProvider) Name() string { return "local" }
 
 // Send sends a non-streaming chat completion request to the local llama-server.
 func (p *LocalProvider) Send(ctx context.Context, req *types.ChatCompletionRequest, model string) (*Response, error) {
-	payload := *req
-	payload.Model = model
-	payload.Stream = false
+	payload := upstreamPayload(req, model, false)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -81,9 +79,7 @@ func (p *LocalProvider) Send(ctx context.Context, req *types.ChatCompletionReque
 // and returns a StreamReader. Reuses sseStreamReader since llama-server uses
 // the same SSE format as OpenAI.
 func (p *LocalProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
-	payload := *req
-	payload.Model = model
-	payload.Stream = true
+	payload := upstreamPayload(req, model, true)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
