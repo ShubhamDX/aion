@@ -18,6 +18,11 @@ import (
 	pkgclassifier "github.com/ShubhamDX/aion/pkg/classifier"
 )
 
+// sessionIDHeader is the optional client-supplied conversation id header. When
+// present it is the highest-precedence session identity (see
+// types.SessionMaterialFromRequest). It is read but never logged raw.
+const sessionIDHeader = "X-AION-Session-Id"
+
 // BudgetChecker validates whether a request is within budget and records spend.
 type BudgetChecker interface {
 	Check(ctx context.Context, apiKeyID string, dailyLimit, monthlyLimit float64) error
@@ -132,18 +137,20 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// 2b. Gateway pre-request hook (optional). An embedding product runs its
 	// decision here: block, hold for approval, or override the routed model
 	// (cheaper-safe routing). A nil hook leaves behavior unchanged.
+	sessionMaterial := types.SessionMaterialFromRequest(&req, r.Header.Get(sessionIDHeader))
 	if h.hooks != nil && h.hooks.PreRequest != nil {
 		estCost := h.estimatedCost(&req, selectedModel)
 		dec := h.hooks.PreRequest(types.PreRequestInput{
-			RequestID:      requestID,
-			PrincipalID:    keyIDFromInfo(keyInfo),
-			Request:        &req,
-			RequestedModel: model,
-			RoutedModel:    selectedModel.ID,
-			RoutedProvider: selectedModel.Provider,
-			Tier:           tier,
-			EstimatedCost:  estCost,
-			RequestDigest:  types.RequestContentDigest(&req),
+			RequestID:       requestID,
+			PrincipalID:     keyIDFromInfo(keyInfo),
+			Request:         &req,
+			RequestedModel:  model,
+			RoutedModel:     selectedModel.ID,
+			RoutedProvider:  selectedModel.Provider,
+			Tier:            tier,
+			EstimatedCost:   estCost,
+			RequestDigest:   types.RequestContentDigest(&req),
+			SessionMaterial: sessionMaterial,
 		})
 		switch dec.Verdict {
 		case types.VerdictBlock:
@@ -260,22 +267,27 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// Gateway post-response hook (optional): the embedding product records the
 	// signed evidence row for this completed request.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
+		// Non-stream: the full response is available, so compute the next turn's
+		// prefix digest now.
+		postMaterial := sessionMaterial
+		postMaterial.NextCachePrefixMaterialSHA256 = types.NextCachePrefixMaterial(&req, resp.ChatResponse)
 		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
-			RequestID:      requestID,
-			PrincipalID:    keyIDFromInfo(keyInfo),
-			RequestedModel: model,
-			RoutedModel:    selectedModel.ID,
-			RoutedProvider: selectedModel.Provider,
-			Tier:           tier,
-			InputTokens:    resp.ChatResponse.Usage.PromptTokens,
-			OutputTokens:   resp.ChatResponse.Usage.CompletionTokens,
-			CostUSD:        costUSD,
-			SavingsUSD:     savingsUSD,
-			LatencyMS:      time.Since(start).Milliseconds(),
-			StatusCode:     resp.StatusCode,
-			Stream:         false,
-			RequestDigest:  types.RequestContentDigest(&req),
-			ResponseDigest: types.ResponseContentDigest(resp.ChatResponse),
+			RequestID:       requestID,
+			PrincipalID:     keyIDFromInfo(keyInfo),
+			RequestedModel:  model,
+			RoutedModel:     selectedModel.ID,
+			RoutedProvider:  selectedModel.Provider,
+			Tier:            tier,
+			InputTokens:     resp.ChatResponse.Usage.PromptTokens,
+			OutputTokens:    resp.ChatResponse.Usage.CompletionTokens,
+			CostUSD:         costUSD,
+			SavingsUSD:      savingsUSD,
+			LatencyMS:       time.Since(start).Milliseconds(),
+			StatusCode:      resp.StatusCode,
+			Stream:          false,
+			RequestDigest:   types.RequestContentDigest(&req),
+			ResponseDigest:  types.ResponseContentDigest(resp.ChatResponse),
+			SessionMaterial: postMaterial,
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
 

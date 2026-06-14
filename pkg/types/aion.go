@@ -34,6 +34,11 @@ type AIONPreferences struct {
 	MaxCostUSD    *float64 `json:"max_cost_usd,omitempty"`
 	PreferQuality bool     `json:"prefer_quality,omitempty"`
 	PreferSpeed   bool     `json:"prefer_speed,omitempty"`
+	// SessionID is an optional caller-supplied conversation id, an alternative to
+	// the X-AION-Session-Id header for clients that prefer a body field. It is
+	// only used to derive a one-way session key downstream; it is never logged or
+	// persisted raw. Empty when unset.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // RoutingDecision captures the outcome of the classification and routing process.

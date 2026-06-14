@@ -141,6 +141,11 @@ type PreRequestInput struct {
 	// RequestDigest is sha256-hex over the canonical request content, so a
 	// decision is anchored to the governed prompt (not just the request id).
 	RequestDigest string
+	// SessionMaterial carries privacy-preserving session/cache identity as
+	// digests only (never the raw session id or prompt text). The embedding
+	// product re-keys these into tenant-scoped HMACs. Source is a non-sensitive
+	// reason field. S1 populates this; it does not change routing.
+	SessionMaterial SessionMaterial
 }
 
 // PreRequestVerdict is the decision the embedding product returns.
@@ -223,6 +228,12 @@ type PostResponseInput struct {
 	// ResponseDigest is sha256-hex over the canonical response content ("" if
 	// the response had no recordable content, e.g. an error).
 	ResponseDigest string
+	// SessionMaterial carries the same digest-only session/cache identity as the
+	// pre-request hook, plus NextCachePrefixMaterialSHA256 (the next turn's prefix
+	// digest) when the full response body is available. On streaming the next
+	// prefix digest is "" (the stream is not buffered to compute it) and the
+	// embedding product safe-degrades. Digests only, never raw material.
+	SessionMaterial SessionMaterial
 }
 
 // PreRequestInput.RequestDigest mirror: the pre-request hook also needs the
