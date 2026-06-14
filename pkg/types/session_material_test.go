@@ -79,7 +79,7 @@ func TestSessionMaterial_PrefixOnlyWithPriorTurn(t *testing.T) {
 	if got := SessionMaterialFromRequest(req(msg("user", "hi")), "x").CachePrefixMaterialSHA256; got != "" {
 		t.Fatalf("single message must have no cache prefix, got %q", got)
 	}
-	// Two+ messages: prefix is everything but the last.
+	// Multi-message turn with no assistant yet: all-but-last fallback yields a prefix.
 	m := SessionMaterialFromRequest(req(msg("system", "s"), msg("user", "u1"), msg("user", "u2")), "x")
 	if m.CachePrefixMaterialSHA256 == "" {
 		t.Fatal("multi-message request must have a cache prefix digest")

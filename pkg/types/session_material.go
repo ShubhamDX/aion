@@ -34,8 +34,10 @@ const (
 //   - SessionMaterialSHA256: digest of the session identity (header/body id, or
 //     the stable conversation root). "" only when Source is SessionSourceNone.
 //   - CachePrefixMaterialSHA256: digest of THIS turn's reusable prefix (the
-//     messages minus the last user turn), i.e. what a warm provider cache would
-//     serve. "" when there is no prior turn to form a prefix.
+//     messages up to and including the last assistant message, with an
+//     all-but-last fallback on a first turn that has no assistant yet), i.e.
+//     what a warm provider cache would serve. "" when there is no prior turn to
+//     form a prefix.
 //   - NextCachePrefixMaterialSHA256: digest of the NEXT turn's prefix (this
 //     request's messages plus the assistant response). Computed only when the
 //     full response body is available; "" on streaming (do NOT buffer a stream
