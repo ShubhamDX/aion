@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ShubhamDX/aion/internal/apikey"
+	"github.com/ShubhamDX/aion/internal/pricing"
 	"github.com/ShubhamDX/aion/internal/provider"
 	"github.com/ShubhamDX/aion/internal/router"
 	"github.com/ShubhamDX/aion/internal/server"
@@ -64,8 +65,10 @@ type anthropicIngressContentBlock struct {
 }
 
 type anthropicIngressUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 type anthropicIngressError struct {
@@ -282,9 +285,14 @@ func translateOpenAIToAnthropic(resp *types.ChatCompletionResponse) *anthropicIn
 		Role:  "assistant",
 		Model: resp.Model,
 		Usage: anthropicIngressUsage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:              resp.Usage.UncachedInputTokens,
+			OutputTokens:             resp.Usage.CompletionTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
 		},
+	}
+	if aResp.Usage.InputTokens == 0 && aResp.Usage.CacheCreationInputTokens == 0 && aResp.Usage.CacheReadInputTokens == 0 {
+		aResp.Usage.InputTokens = resp.Usage.PromptTokens
 	}
 
 	if len(resp.Choices) > 0 {
@@ -508,20 +516,10 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Calculate cost and savings.
 	var costUSD, savingsUSD float64
+	var costBreakdown pricing.CostBreakdown
 	if resp.ChatResponse != nil && resp.ChatResponse.Usage.TotalTokens > 0 {
-		costUSD = h.pricing.EstimateCost(
-			selectedModel.ID,
-			resp.ChatResponse.Usage.PromptTokens,
-			resp.ChatResponse.Usage.CompletionTokens,
-		)
-		maxCost := h.pricing.MostExpensiveModelCost(
-			resp.ChatResponse.Usage.PromptTokens,
-			resp.ChatResponse.Usage.CompletionTokens,
-		)
-		savingsUSD = maxCost - costUSD
-		if savingsUSD < 0 {
-			savingsUSD = 0
-		}
+		costBreakdown, savingsUSD = h.costAndSavings(selectedModel.ID, resp.ChatResponse.Usage)
+		costUSD = costBreakdown.TotalUSD
 	}
 
 	w.Header().Set("X-AION-Cost-USD", fmt.Sprintf("%.6f", costUSD))
@@ -554,7 +552,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// Gateway post-response hook (optional): record signed evidence for the
 	// Anthropic-ingress request, same as the OpenAI path.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
-		h.hooks.PostResponse(types.PostResponseInput{
+		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:      requestID,
 			PrincipalID:    keyIDFromInfo(keyInfo),
 			RequestedModel: model,
@@ -570,7 +568,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			Stream:         false,
 			RequestDigest:  types.RequestContentDigest(req),
 			ResponseDigest: types.ResponseContentDigest(resp.ChatResponse),
-		})
+		}, resp.ChatResponse.Usage, costBreakdown))
 	}
 
 	// Translate OpenAI response -> Anthropic response.
@@ -660,7 +658,7 @@ func (h *Handler) handleAnthropicStream(
 		}
 
 		if chunk.Usage != nil {
-			totalUsage = *chunk.Usage
+			totalUsage.MergeFrom(*chunk.Usage)
 		}
 
 		for _, choice := range chunk.Choices {
@@ -775,20 +773,10 @@ func (h *Handler) handleAnthropicStream(
 
 	// Calculate cost and savings.
 	var costUSD, savingsUSD float64
+	var costBreakdown pricing.CostBreakdown
 	if totalUsage.TotalTokens > 0 {
-		costUSD = h.pricing.EstimateCost(
-			model.ID,
-			totalUsage.PromptTokens,
-			totalUsage.CompletionTokens,
-		)
-		maxCost := h.pricing.MostExpensiveModelCost(
-			totalUsage.PromptTokens,
-			totalUsage.CompletionTokens,
-		)
-		savingsUSD = maxCost - costUSD
-		if savingsUSD < 0 {
-			savingsUSD = 0
-		}
+		costBreakdown, savingsUSD = h.costAndSavings(model.ID, totalUsage)
+		costUSD = costBreakdown.TotalUSD
 	}
 
 	// Record telemetry.
@@ -818,7 +806,7 @@ func (h *Handler) handleAnthropicStream(
 	// Gateway post-response hook (optional). Streamed content is not reassembled,
 	// so the output digest is empty (correlation-only output anchor).
 	if h.hooks != nil && h.hooks.PostResponse != nil {
-		h.hooks.PostResponse(types.PostResponseInput{
+		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:      requestID,
 			PrincipalID:    keyIDFromInfo(keyInfo),
 			RequestedModel: req.Model,
@@ -834,7 +822,7 @@ func (h *Handler) handleAnthropicStream(
 			Stream:         true,
 			RequestDigest:  types.RequestContentDigest(req),
 			ResponseDigest: "",
-		})
+		}, totalUsage, costBreakdown))
 	}
 }
 

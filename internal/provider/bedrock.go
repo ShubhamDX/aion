@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	bedrockDefaultRegion     = "us-east-1"
-	bedrockAnthropicVersion  = "bedrock-2023-05-31"
-	bedrockDefaultMaxTok     = 4096
+	bedrockDefaultRegion    = "us-east-1"
+	bedrockAnthropicVersion = "bedrock-2023-05-31"
+	bedrockDefaultMaxTok    = 4096
 )
 
 // bedrockRequest is the Anthropic Messages API request for Bedrock.
@@ -262,6 +262,14 @@ func (s *bedrockStreamReader) translateEvent(evt *anthropicStreamEvent) (chunk *
 			s.id = evt.Message.ID
 			s.model = evt.Message.Model
 		}
+		var usage *types.Usage
+		if evt.Message != nil {
+			u := usageFromAnthropic(evt.Message.Usage)
+			usage = &u
+		} else if evt.Usage != nil {
+			u := usageFromAnthropic(*evt.Usage)
+			usage = &u
+		}
 		role := "assistant"
 		return &types.ChatCompletionChunk{
 			ID:      s.id,
@@ -274,6 +282,7 @@ func (s *bedrockStreamReader) translateEvent(evt *anthropicStreamEvent) (chunk *
 					Delta: types.ChunkDelta{Role: role},
 				},
 			},
+			Usage: usage,
 		}, false
 
 	case "content_block_delta":
@@ -301,6 +310,11 @@ func (s *bedrockStreamReader) translateEvent(evt *anthropicStreamEvent) (chunk *
 			return nil, false
 		}
 		finishReason := mapAnthropicStopReason(delta.StopReason)
+		var usage *types.Usage
+		if evt.Usage != nil {
+			u := usageFromAnthropic(*evt.Usage)
+			usage = &u
+		}
 		return &types.ChatCompletionChunk{
 			ID:      s.id,
 			Object:  "chat.completion.chunk",
@@ -313,6 +327,7 @@ func (s *bedrockStreamReader) translateEvent(evt *anthropicStreamEvent) (chunk *
 					FinishReason: &finishReason,
 				},
 			},
+			Usage: usage,
 		}, false
 
 	case "message_stop":

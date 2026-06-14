@@ -65,8 +65,12 @@ type anthropicContent struct {
 }
 
 type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens                int    `json:"input_tokens"`
+	OutputTokens               int    `json:"output_tokens"`
+	CacheCreationInputTokens   int    `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens       int    `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens1h int    `json:"cache_creation_input_tokens_1h"`
+	ServiceTier                string `json:"service_tier,omitempty"`
 }
 
 // ---------- streaming event types ----------
@@ -78,6 +82,7 @@ type anthropicStreamEvent struct {
 
 	// message_start carries the full message stub
 	Message *anthropicResponse `json:"message,omitempty"`
+	Usage   *anthropicUsage    `json:"usage,omitempty"`
 
 	// content_block_start
 	ContentBlock *anthropicContent `json:"content_block,omitempty"`
@@ -265,12 +270,25 @@ func translateAnthropicResponse(aResp *anthropicResponse) *types.ChatCompletionR
 				FinishReason: finishReason,
 			},
 		},
-		Usage: types.Usage{
-			PromptTokens:     aResp.Usage.InputTokens,
-			CompletionTokens: aResp.Usage.OutputTokens,
-			TotalTokens:      aResp.Usage.InputTokens + aResp.Usage.OutputTokens,
-		},
+		Usage: usageFromAnthropic(aResp.Usage),
 	}
+}
+
+func usageFromAnthropic(u anthropicUsage) types.Usage {
+	cacheCreation := u.CacheCreationInputTokens + u.CacheCreationInputTokens1h
+	promptTokens := u.InputTokens + u.CacheReadInputTokens + cacheCreation
+	usage := types.Usage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      promptTokens + u.OutputTokens,
+	}
+	if u.CacheReadInputTokens > 0 || cacheCreation > 0 {
+		usage.UncachedInputTokens = u.InputTokens
+		usage.CacheReadInputTokens = u.CacheReadInputTokens
+		usage.CacheCreationInputTokens = cacheCreation
+		usage.ProviderCacheMode = u.ServiceTier
+	}
+	return usage
 }
 
 func mapAnthropicStopReason(reason string) string {
@@ -320,6 +338,14 @@ func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) 
 				s.id = evt.Message.ID
 				s.model = evt.Message.Model
 			}
+			var usage *types.Usage
+			if evt.Message != nil {
+				u := usageFromAnthropic(evt.Message.Usage)
+				usage = &u
+			} else if evt.Usage != nil {
+				u := usageFromAnthropic(*evt.Usage)
+				usage = &u
+			}
 			// Emit a chunk with the assistant role.
 			role := "assistant"
 			return &types.ChatCompletionChunk{
@@ -335,6 +361,7 @@ func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) 
 						},
 					},
 				},
+				Usage: usage,
 			}, nil
 
 		case "content_block_delta":
@@ -372,6 +399,11 @@ func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) 
 				return nil, fmt.Errorf("anthropic stream: unmarshal delta: %w", err)
 			}
 			finishReason := mapAnthropicStopReason(delta.StopReason)
+			var usage *types.Usage
+			if evt.Usage != nil {
+				u := usageFromAnthropic(*evt.Usage)
+				usage = &u
+			}
 			return &types.ChatCompletionChunk{
 				ID:      s.id,
 				Object:  "chat.completion.chunk",
@@ -384,6 +416,7 @@ func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) 
 						FinishReason: &finishReason,
 					},
 				},
+				Usage: usage,
 			}, nil
 
 		case "message_stop":

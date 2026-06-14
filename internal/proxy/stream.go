@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ShubhamDX/aion/internal/apikey"
+	"github.com/ShubhamDX/aion/internal/pricing"
 	"github.com/ShubhamDX/aion/internal/provider"
 	"github.com/ShubhamDX/aion/internal/router"
 	"github.com/ShubhamDX/aion/internal/telemetry"
@@ -71,9 +72,9 @@ func (h *Handler) handleStream(
 			break
 		}
 
-		// Accumulate usage if the provider sends it in the final chunk.
+		// Accumulate usage if the provider sends it.
 		if chunk.Usage != nil {
-			totalUsage = *chunk.Usage
+			totalUsage.MergeFrom(*chunk.Usage)
 		}
 
 		data, marshalErr := json.Marshal(chunk)
@@ -92,20 +93,10 @@ func (h *Handler) handleStream(
 
 	// Calculate cost and savings from accumulated usage.
 	var costUSD, savingsUSD float64
+	var costBreakdown pricing.CostBreakdown
 	if totalUsage.TotalTokens > 0 {
-		costUSD = h.pricing.EstimateCost(
-			model.ID,
-			totalUsage.PromptTokens,
-			totalUsage.CompletionTokens,
-		)
-		maxCost := h.pricing.MostExpensiveModelCost(
-			totalUsage.PromptTokens,
-			totalUsage.CompletionTokens,
-		)
-		savingsUSD = maxCost - costUSD
-		if savingsUSD < 0 {
-			savingsUSD = 0
-		}
+		costBreakdown, savingsUSD = h.costAndSavings(model.ID, totalUsage)
+		costUSD = costBreakdown.TotalUSD
 	}
 
 	// Record telemetry asynchronously.
@@ -134,7 +125,7 @@ func (h *Handler) handleStream(
 
 	// Gateway post-response hook (optional).
 	if h.hooks != nil && h.hooks.PostResponse != nil {
-		h.hooks.PostResponse(types.PostResponseInput{
+		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:      requestID,
 			PrincipalID:    keyIDFromInfo(keyInfo),
 			RequestedModel: req.Model,
@@ -152,6 +143,6 @@ func (h *Handler) handleStream(
 			// Streamed response content is not reassembled here, so the output
 			// digest is empty; the input digest still binds the governed prompt.
 			ResponseDigest: "",
-		})
+		}, totalUsage, costBreakdown))
 	}
 }

@@ -197,19 +197,27 @@ type PreRequestDecision struct {
 // ResponseDigest are computed by the proxy from the parsed bodies; they are
 // one-way hashes, not the content itself.
 type PostResponseInput struct {
-	RequestID      string
-	PrincipalID    string
-	RequestedModel string
-	RoutedModel    string
-	RoutedProvider string
-	Tier           Tier
-	InputTokens    int
-	OutputTokens   int
-	CostUSD        float64
-	SavingsUSD     float64
-	LatencyMS      int64
-	StatusCode     int
-	Stream         bool
+	RequestID                 string
+	PrincipalID               string
+	RequestedModel            string
+	RoutedModel               string
+	RoutedProvider            string
+	Tier                      Tier
+	InputTokens               int
+	OutputTokens              int
+	UncachedInputTokens       int
+	CacheReadInputTokens      int
+	CacheCreationInputTokens  int
+	ProviderCacheMode         string
+	UncachedInputCostUSD      float64
+	CacheReadInputCostUSD     float64
+	CacheCreationInputCostUSD float64
+	OutputCostUSD             float64
+	CostUSD                   float64
+	SavingsUSD                float64
+	LatencyMS                 int64
+	StatusCode                int
+	Stream                    bool
 	// RequestDigest is sha256-hex over the canonical request content.
 	RequestDigest string
 	// ResponseDigest is sha256-hex over the canonical response content ("" if

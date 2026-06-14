@@ -224,20 +224,10 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// Calculate cost and savings.
 	var costUSD, savingsUSD float64
+	var costBreakdown pricing.CostBreakdown
 	if resp.ChatResponse != nil && resp.ChatResponse.Usage.TotalTokens > 0 {
-		costUSD = h.pricing.EstimateCost(
-			selectedModel.ID,
-			resp.ChatResponse.Usage.PromptTokens,
-			resp.ChatResponse.Usage.CompletionTokens,
-		)
-		maxCost := h.pricing.MostExpensiveModelCost(
-			resp.ChatResponse.Usage.PromptTokens,
-			resp.ChatResponse.Usage.CompletionTokens,
-		)
-		savingsUSD = maxCost - costUSD
-		if savingsUSD < 0 {
-			savingsUSD = 0
-		}
+		costBreakdown, savingsUSD = h.costAndSavings(selectedModel.ID, resp.ChatResponse.Usage)
+		costUSD = costBreakdown.TotalUSD
 	}
 
 	w.Header().Set("X-AION-Cost-USD", fmt.Sprintf("%.6f", costUSD))
@@ -270,7 +260,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// Gateway post-response hook (optional): the embedding product records the
 	// signed evidence row for this completed request.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
-		h.hooks.PostResponse(types.PostResponseInput{
+		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:      requestID,
 			PrincipalID:    keyIDFromInfo(keyInfo),
 			RequestedModel: model,
@@ -286,7 +276,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			Stream:         false,
 			RequestDigest:  types.RequestContentDigest(&req),
 			ResponseDigest: types.ResponseContentDigest(resp.ChatResponse),
-		})
+		}, resp.ChatResponse.Usage, costBreakdown))
 	}
 
 	// Write response.
