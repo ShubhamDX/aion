@@ -2,14 +2,26 @@ package pricing
 
 import (
 	"github.com/ShubhamDX/aion/internal/config"
+	"github.com/ShubhamDX/aion/pkg/types"
 )
 
 // ModelPrice holds per-token pricing for a single model.
 type ModelPrice struct {
-	ModelID          string
-	Provider         string
-	InputPricePer1M  float64
-	OutputPricePer1M float64
+	ModelID               string
+	Provider              string
+	InputPricePer1M       float64
+	CachedInputPricePer1M float64
+	CacheWritePricePer1M  float64
+	OutputPricePer1M      float64
+}
+
+// CostBreakdown prices each token class at its own rate.
+type CostBreakdown struct {
+	UncachedInputUSD      float64
+	CacheReadInputUSD     float64
+	CacheCreationInputUSD float64
+	OutputUSD             float64
+	TotalUSD              float64
 }
 
 // Table provides model price lookups and cost estimation.
@@ -29,10 +41,12 @@ func NewTable(providers config.ProvidersConfig) *Table {
 		}
 		for _, m := range pc.Models {
 			prices[m.ID] = &ModelPrice{
-				ModelID:          m.ID,
-				Provider:         providerName,
-				InputPricePer1M:  m.InputPricePer1M,
-				OutputPricePer1M: m.OutputPricePer1M,
+				ModelID:               m.ID,
+				Provider:              providerName,
+				InputPricePer1M:       m.InputPricePer1M,
+				CachedInputPricePer1M: m.CachedInputPricePer1M,
+				CacheWritePricePer1M:  m.CacheWritePricePer1M,
+				OutputPricePer1M:      m.OutputPricePer1M,
 			}
 		}
 	}
@@ -77,6 +91,15 @@ func (t *Table) EstimateCost(modelID string, inputTokens, outputTokens int) floa
 	return (float64(inputTokens)*p.InputPricePer1M + float64(outputTokens)*p.OutputPricePer1M) / 1_000_000
 }
 
+// EstimateUsageCost calculates cost from the normalized input-token partition.
+func (t *Table) EstimateUsageCost(modelID string, usage types.Usage) CostBreakdown {
+	p, ok := t.prices[modelID]
+	if !ok {
+		return CostBreakdown{}
+	}
+	return costForUsage(p, usage)
+}
+
 // MostExpensiveModelCost returns the cost that would be incurred if the
 // most expensive model in the table were used for the given token counts.
 // This is useful for calculating savings compared to a naive approach.
@@ -89,4 +112,37 @@ func (t *Table) MostExpensiveModelCost(inputTokens, outputTokens int) float64 {
 		}
 	}
 	return maxCost
+}
+
+// MostExpensiveUsageCost returns the highest cache-aware cost for this usage.
+func (t *Table) MostExpensiveUsageCost(usage types.Usage) float64 {
+	var maxCost float64
+	for _, p := range t.prices {
+		cost := costForUsage(p, usage).TotalUSD
+		if cost > maxCost {
+			maxCost = cost
+		}
+	}
+	return maxCost
+}
+
+func costForUsage(p *ModelPrice, usage types.Usage) CostBreakdown {
+	usage.NormalizeInputPartition()
+	cachedRate := p.CachedInputPricePer1M
+	if cachedRate == 0 {
+		cachedRate = p.InputPricePer1M
+	}
+	writeRate := p.CacheWritePricePer1M
+	if writeRate == 0 {
+		writeRate = p.InputPricePer1M
+	}
+	breakdown := CostBreakdown{
+		UncachedInputUSD:      float64(usage.UncachedInputTokens) * p.InputPricePer1M / 1_000_000,
+		CacheReadInputUSD:     float64(usage.CacheReadInputTokens) * cachedRate / 1_000_000,
+		CacheCreationInputUSD: float64(usage.CacheCreationInputTokens) * writeRate / 1_000_000,
+		OutputUSD:             float64(usage.CompletionTokens) * p.OutputPricePer1M / 1_000_000,
+	}
+	breakdown.TotalUSD = breakdown.UncachedInputUSD + breakdown.CacheReadInputUSD +
+		breakdown.CacheCreationInputUSD + breakdown.OutputUSD
+	return breakdown
 }

@@ -50,9 +50,9 @@ type ProvidersConfig struct {
 
 // LocalProviderConfig configures the local llama.cpp inference provider.
 type LocalProviderConfig struct {
-	Enabled bool              `yaml:"enabled"`
-	BaseURL string            `yaml:"base_url,omitempty"`
-	Models  []ModelConfig     `yaml:"models"`
+	Enabled bool                `yaml:"enabled"`
+	BaseURL string              `yaml:"base_url,omitempty"`
+	Models  []ModelConfig       `yaml:"models"`
 	Managed *ManagedLlamaConfig `yaml:"managed,omitempty"`
 }
 
@@ -80,11 +80,13 @@ type ProviderConfig struct {
 
 // ModelConfig describes a model exposed through a provider.
 type ModelConfig struct {
-	ID               string  `yaml:"id"`
-	Tier             int     `yaml:"tier"`
-	InputPricePer1M  float64 `yaml:"input_price_per_1m"`
-	OutputPricePer1M float64 `yaml:"output_price_per_1m"`
-	MaxTokens        int     `yaml:"max_tokens,omitempty"`
+	ID                    string  `yaml:"id"`
+	Tier                  int     `yaml:"tier"`
+	InputPricePer1M       float64 `yaml:"input_price_per_1m"`
+	CachedInputPricePer1M float64 `yaml:"cached_input_price_per_1m,omitempty"`
+	CacheWritePricePer1M  float64 `yaml:"cache_write_price_per_1m,omitempty"`
+	OutputPricePer1M      float64 `yaml:"output_price_per_1m"`
+	MaxTokens             int     `yaml:"max_tokens,omitempty"`
 }
 
 // RoutingConfig controls how requests are routed to models.

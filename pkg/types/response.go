@@ -18,11 +18,102 @@ type Choice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
-// Usage reports token consumption for a request.
+// PromptTokensDetails carries OpenAI-compatible prompt-token subcounts.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+// Usage reports token consumption for a request. PromptTokens is total input.
+// The input partition is:
+//
+//	PromptTokens = UncachedInputTokens + CacheReadInputTokens + CacheCreationInputTokens
+//
+// Providers without cache fields normalize all prompt tokens as uncached.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens             int                  `json:"prompt_tokens"`
+	CompletionTokens         int                  `json:"completion_tokens"`
+	TotalTokens              int                  `json:"total_tokens"`
+	PromptTokensDetails      *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	UncachedInputTokens      int                  `json:"uncached_input_tokens,omitempty"`
+	CacheReadInputTokens     int                  `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int                  `json:"cache_creation_input_tokens,omitempty"`
+	ProviderCacheMode        string               `json:"provider_cache_mode,omitempty"`
+}
+
+// NormalizeInputPartition fills missing partition fields without changing the
+// customer-facing aggregate token counts.
+func (u *Usage) NormalizeInputPartition() {
+	if u == nil {
+		return
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 && u.CacheReadInputTokens == 0 {
+		u.CacheReadInputTokens = u.PromptTokensDetails.CachedTokens
+	}
+	if u.UncachedInputTokens == 0 {
+		if u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
+			u.UncachedInputTokens = maxInt(u.PromptTokens-u.CacheReadInputTokens-u.CacheCreationInputTokens, 0)
+		} else {
+			u.UncachedInputTokens = u.PromptTokens
+		}
+	}
+	input := u.UncachedInputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	if u.PromptTokens == 0 && input > 0 {
+		u.PromptTokens = input
+	}
+	total := u.PromptTokens + u.CompletionTokens
+	if total > u.TotalTokens {
+		u.TotalTokens = total
+	}
+}
+
+// InputPartitionValid reports whether the normalized input classes add up to
+// the total prompt input and contain no negative values.
+func (u Usage) InputPartitionValid() bool {
+	u.NormalizeInputPartition()
+	if u.PromptTokens < 0 || u.CompletionTokens < 0 || u.TotalTokens < 0 ||
+		u.UncachedInputTokens < 0 || u.CacheReadInputTokens < 0 ||
+		u.CacheCreationInputTokens < 0 {
+		return false
+	}
+	input := u.UncachedInputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	return u.PromptTokens == input
+}
+
+// MergeFrom merges a streaming usage chunk into an accumulated usage value.
+func (u *Usage) MergeFrom(chunk Usage) {
+	chunk.NormalizeInputPartition()
+	if chunk.PromptTokens > 0 {
+		u.PromptTokens = chunk.PromptTokens
+	}
+	if chunk.CompletionTokens > 0 {
+		u.CompletionTokens = chunk.CompletionTokens
+	}
+	if chunk.TotalTokens > 0 {
+		u.TotalTokens = chunk.TotalTokens
+	}
+	if chunk.PromptTokensDetails != nil {
+		u.PromptTokensDetails = chunk.PromptTokensDetails
+	}
+	if chunk.UncachedInputTokens > 0 {
+		u.UncachedInputTokens = chunk.UncachedInputTokens
+	}
+	if chunk.CacheReadInputTokens > 0 {
+		u.CacheReadInputTokens = chunk.CacheReadInputTokens
+	}
+	if chunk.CacheCreationInputTokens > 0 {
+		u.CacheCreationInputTokens = chunk.CacheCreationInputTokens
+	}
+	if chunk.ProviderCacheMode != "" {
+		u.ProviderCacheMode = chunk.ProviderCacheMode
+	}
+	u.NormalizeInputPartition()
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ChatCompletionChunk represents a single SSE chunk in a streaming response.
