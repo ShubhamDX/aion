@@ -29,3 +29,19 @@ type Provider interface {
 
 // ensure StreamReader requires io.EOF sentinel
 var _ error = io.EOF
+
+// upstreamPayload builds the request body to send to an OpenAI-compatible
+// provider: a copy of req with the resolved model and stream flag set, and ALL
+// AION control fields stripped. aion_preferences (incl session_id) is an
+// internal routing/session hint, never a provider field; sending it upstream
+// would leak the caller's session id and a non-standard field. Translating
+// providers (Anthropic/Bedrock/Vertex) build their own payloads and never see
+// these fields; the pass-through providers MUST go through this helper so a new
+// AION control field can never silently ship upstream.
+func upstreamPayload(req *types.ChatCompletionRequest, model string, stream bool) types.ChatCompletionRequest {
+	payload := *req
+	payload.Model = model
+	payload.Stream = stream
+	payload.AIONPreferences = nil
+	return payload
+}

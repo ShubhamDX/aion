@@ -138,6 +138,9 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// decision here: block, hold for approval, or override the routed model
 	// (cheaper-safe routing). A nil hook leaves behavior unchanged.
 	sessionMaterial := types.SessionMaterialFromRequest(&req, r.Header.Get(sessionIDHeader))
+	// Material extracted; scrub the raw session id so it never reaches the hook
+	// (digests only) or an upstream provider.
+	types.ScrubSessionID(&req)
 	if h.hooks != nil && h.hooks.PreRequest != nil {
 		estCost := h.estimatedCost(&req, selectedModel)
 		dec := h.hooks.PreRequest(types.PreRequestInput{
@@ -212,7 +215,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Dispatch -- streaming or non-streaming.
 	if req.Stream {
-		h.handleStream(w, r, &req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start)
+		h.handleStream(w, r, &req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)
 		return
 	}
 

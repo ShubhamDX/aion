@@ -47,6 +47,17 @@ type SessionMaterial struct {
 	NextCachePrefixMaterialSHA256 string
 }
 
+// ScrubSessionID clears the raw caller-supplied session id from the request's
+// AIONPreferences once the session material has been extracted, so the raw id
+// never reaches a gateway hook (the embedding product only ever sees digests)
+// or an upstream provider. Other routing hints (preferred_tier, etc.) are left
+// intact. Call AFTER SessionMaterialFromRequest. No-op when there are no prefs.
+func ScrubSessionID(req *ChatCompletionRequest) {
+	if req != nil && req.AIONPreferences != nil {
+		req.AIONPreferences.SessionID = ""
+	}
+}
+
 // SessionMaterialFromRequest extracts the pre-dispatch session material: the
 // session-identity digest and THIS turn's cache-prefix digest. headerID is the
 // X-AION-Session-Id header value ("" if absent). It never returns or logs raw
@@ -72,10 +83,17 @@ func SessionMaterialFromRequest(req *ChatCompletionRequest, headerID string) Ses
 			m.Source = SessionSourceNone
 		}
 	}
-	// This turn's reusable prefix is the messages minus the last (current) user
-	// turn. With 0 or 1 message there is no prior prefix to reuse.
-	if req != nil && len(req.Messages) > 1 {
-		m.CachePrefixMaterialSHA256 = messagesDigest(req.Messages[:len(req.Messages)-1])
+	// This turn's reusable prefix is everything up to and INCLUDING the last
+	// assistant message: the new content this turn (a user message, or several
+	// tool-result messages after an assistant tool-call) is appended after it,
+	// and the provider cache covers the stable head. Cutting at len-1 would break
+	// for agentic turns that append multiple tool results. It also chains: this
+	// equals the prior turn's NextCachePrefixMaterial (req + assistant), so the
+	// stored next-prefix matches regardless of how many tool messages follow.
+	if req != nil {
+		if prefix, ok := cacheablePrefix(req.Messages); ok {
+			m.CachePrefixMaterialSHA256 = messagesDigest(prefix)
+		}
 	}
 	return m
 }
@@ -101,6 +119,30 @@ func NextCachePrefixMaterial(req *ChatCompletionRequest, resp *ChatCompletionRes
 		Role: "assistant", Content: choice.Message.Content, ToolCalls: choice.Message.ToolCalls,
 	})
 	return digestJSON(next)
+}
+
+// cacheablePrefix returns the leading messages that form THIS turn's reusable
+// provider-cache prefix: everything up to and including the LAST assistant
+// message (the conversation head the provider would serve warm). New user/tool
+// messages this turn come after it. Returns ok=false when there is no prior
+// prefix to reuse, i.e. no assistant message has occurred yet AND there is at
+// most one message (a bare first user turn). When messages exist but none is an
+// assistant message (e.g. a first turn with system + user), it falls back to
+// "all but the last" so a multi-message first turn still has a prefix.
+func cacheablePrefix(msgs []Message) ([]Message, bool) {
+	lastAssistant := -1
+	for i, m := range msgs {
+		if m.Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+	if lastAssistant >= 0 {
+		return msgs[:lastAssistant+1], true
+	}
+	if len(msgs) > 1 {
+		return msgs[:len(msgs)-1], true
+	}
+	return nil, false
 }
 
 // stableConversationRoot digests the parts of a conversation that do not change

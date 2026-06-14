@@ -30,6 +30,7 @@ func (h *Handler) handleStream(
 	keyInfo *apikey.KeyInfo,
 	requestID string,
 	start time.Time,
+	sessionMaterial types.SessionMaterial,
 ) {
 	ctx := r.Context()
 
@@ -145,7 +146,7 @@ func (h *Handler) handleStream(
 			Stream:          true,
 			RequestDigest:   types.RequestContentDigest(req),
 			ResponseDigest:  "",
-			SessionMaterial: types.SessionMaterialFromRequest(req, r.Header.Get(sessionIDHeader)),
+			SessionMaterial: sessionMaterial,
 		}, totalUsage, costBreakdown))
 	}
 }

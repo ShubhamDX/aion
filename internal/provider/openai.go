@@ -41,9 +41,7 @@ func (p *OpenAIProvider) Name() string { return "openai" }
 
 // Send sends a non-streaming chat completion request to OpenAI.
 func (p *OpenAIProvider) Send(ctx context.Context, req *types.ChatCompletionRequest, model string) (*Response, error) {
-	payload := *req
-	payload.Model = model
-	payload.Stream = false
+	payload := upstreamPayload(req, model, false)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -80,9 +78,7 @@ func (p *OpenAIProvider) Send(ctx context.Context, req *types.ChatCompletionRequ
 
 // SendStream sends a streaming chat completion request to OpenAI and returns a StreamReader.
 func (p *OpenAIProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
-	payload := *req
-	payload.Model = model
-	payload.Stream = true
+	payload := upstreamPayload(req, model, true)
 
 	body, err := json.Marshal(payload)
 	if err != nil {

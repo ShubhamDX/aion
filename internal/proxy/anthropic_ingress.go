@@ -427,6 +427,9 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// the OpenAI ingress, so /v1/messages traffic cannot bypass decisions or
 	// signed evidence. A nil hook leaves behavior unchanged.
 	sessionMaterial := types.SessionMaterialFromRequest(req, r.Header.Get(sessionIDHeader))
+	// Material extracted; scrub the raw session id so it never reaches the hook
+	// (digests only) or an upstream provider.
+	types.ScrubSessionID(req)
 	if h.hooks != nil && h.hooks.PreRequest != nil {
 		dec := h.hooks.PreRequest(types.PreRequestInput{
 			RequestID:       requestID,
@@ -499,7 +502,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 7. Dispatch — streaming or non-streaming.
 	if req.Stream {
-		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start)
+		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)
 		return
 	}
 
@@ -600,6 +603,7 @@ func (h *Handler) handleAnthropicStream(
 	keyInfo *apikey.KeyInfo,
 	requestID string,
 	start time.Time,
+	sessionMaterial types.SessionMaterial,
 ) {
 	ctx := r.Context()
 
@@ -828,7 +832,7 @@ func (h *Handler) handleAnthropicStream(
 			Stream:          true,
 			RequestDigest:   types.RequestContentDigest(req),
 			ResponseDigest:  "",
-			SessionMaterial: types.SessionMaterialFromRequest(req, r.Header.Get(sessionIDHeader)),
+			SessionMaterial: sessionMaterial,
 		}, totalUsage, costBreakdown))
 	}
 }

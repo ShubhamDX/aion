@@ -114,3 +114,55 @@ func mustJSON(s string) json.RawMessage {
 	b, _ := json.Marshal(s)
 	return b
 }
+
+func TestCachePrefix_CutsAtLastAssistant_AgenticTurn(t *testing.T) {
+	// Turn N: system, user, assistant(tool_calls). Stored next-prefix = those 3.
+	rN := req(msg("system", "s"), msg("user", "u1"))
+	respN := &ChatCompletionResponse{Choices: []Choice{{
+		Message: Message{Role: "assistant", Content: mustJSON("calling tools")},
+	}}}
+	next := NextCachePrefixMaterial(rN, respN)
+	if next == "" {
+		t.Fatal("next prefix must be set")
+	}
+
+	// Turn N+1: client appends TWO tool-result messages after the assistant.
+	// This-turn prefix must cut at the assistant (the 3-message head), NOT at
+	// len-1 (which would wrongly include the first tool result), so it equals the
+	// stored next-prefix and the warm cache is found.
+	rN1 := req(msg("system", "s"), msg("user", "u1"), msg("assistant", "calling tools"),
+		msg("tool", "result-a"), msg("tool", "result-b"))
+	m := SessionMaterialFromRequest(rN1, "sess")
+	if m.CachePrefixMaterialSHA256 != next {
+		t.Fatal("agentic this-turn prefix must chain to the stored next-prefix (cut at last assistant)")
+	}
+}
+
+func TestCachePrefix_FirstTurnFallback(t *testing.T) {
+	// No assistant yet, system + user: fall back to all-but-last so a multi-message
+	// first turn still has a prefix.
+	m := SessionMaterialFromRequest(req(msg("system", "s"), msg("user", "u1")), "x")
+	if m.CachePrefixMaterialSHA256 == "" {
+		t.Fatal("multi-message first turn must still have a prefix")
+	}
+	// Bare single user message: no reusable prefix.
+	if got := SessionMaterialFromRequest(req(msg("user", "hi")), "x").CachePrefixMaterialSHA256; got != "" {
+		t.Fatalf("single message must have no prefix, got %q", got)
+	}
+}
+
+func TestScrubSessionID(t *testing.T) {
+	r := reqWithBody("secret-thread-42")
+	r.AIONPreferences.PreferredTier = ptrInt(2)
+	ScrubSessionID(r)
+	if r.AIONPreferences.SessionID != "" {
+		t.Fatal("session id must be scrubbed")
+	}
+	if r.AIONPreferences.PreferredTier == nil || *r.AIONPreferences.PreferredTier != 2 {
+		t.Fatal("other routing hints must survive scrub")
+	}
+	// No prefs -> no panic.
+	ScrubSessionID(req(msg("user", "hi")))
+}
+
+func ptrInt(i int) *int { return &i }

@@ -32,4 +32,5 @@ var (
 	ResponseContentDigest      = pkgtypes.ResponseContentDigest
 	SessionMaterialFromRequest = pkgtypes.SessionMaterialFromRequest
 	NextCachePrefixMaterial    = pkgtypes.NextCachePrefixMaterial
+	ScrubSessionID             = pkgtypes.ScrubSessionID
 )
