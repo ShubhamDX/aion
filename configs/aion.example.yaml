@@ -29,33 +29,50 @@ providers:
     api_key: "${OPENAI_API_KEY}"
     # base_url: "https://api.openai.com/v1"  # Optional, defaults to OpenAI
     models:
+      # OpenAI bills cached prompt tokens at a reduced rate (about half the input
+      # rate) and has no separate cache-write charge, so cached_input_price_per_1m
+      # is set and cache_write_price_per_1m is omitted (falls back to input rate,
+      # though OpenAI reports no cache-creation tokens so it is never charged).
       - id: "gpt-4o-mini"
         tier: 1
         input_price_per_1m: 0.15
+        cached_input_price_per_1m: 0.075
         output_price_per_1m: 0.60
       - id: "gpt-4o"
         tier: 2
         input_price_per_1m: 2.50
+        cached_input_price_per_1m: 1.25
         output_price_per_1m: 10.00
       - id: "o1"
         tier: 3
         input_price_per_1m: 15.00
+        cached_input_price_per_1m: 7.50
         output_price_per_1m: 60.00
 
   anthropic:
     api_key: "${ANTHROPIC_API_KEY}"
     models:
+      # Anthropic prompt caching: cache READ is about 0.1x the input rate, cache
+      # WRITE (5-minute cache creation) is about 1.25x the input rate. Both are
+      # set explicitly. Any model left without these fields prices cache tokens
+      # at the full input rate (conservative: no assumed discount).
       - id: "claude-haiku-3-5"
         tier: 1
         input_price_per_1m: 0.80
+        cached_input_price_per_1m: 0.08
+        cache_write_price_per_1m: 1.00
         output_price_per_1m: 4.00
       - id: "claude-sonnet-4"
         tier: 2
         input_price_per_1m: 3.00
+        cached_input_price_per_1m: 0.30
+        cache_write_price_per_1m: 3.75
         output_price_per_1m: 15.00
       - id: "claude-opus-4"
         tier: 3
         input_price_per_1m: 15.00
+        cached_input_price_per_1m: 1.50
+        cache_write_price_per_1m: 18.75
         output_price_per_1m: 75.00
 
   # openrouter:
@@ -73,14 +90,20 @@ providers:
   #     - id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
   #       tier: 1
   #       input_price_per_1m: 0.80
+  #       cached_input_price_per_1m: 0.08
+  #       cache_write_price_per_1m: 1.00
   #       output_price_per_1m: 4.00
   #     - id: "us.anthropic.claude-sonnet-4-6-v1"
   #       tier: 2
   #       input_price_per_1m: 3.00
+  #       cached_input_price_per_1m: 0.30
+  #       cache_write_price_per_1m: 3.75
   #       output_price_per_1m: 15.00
   #     - id: "us.anthropic.claude-opus-4-6-v1"
   #       tier: 3
   #       input_price_per_1m: 15.00
+  #       cached_input_price_per_1m: 1.50
+  #       cache_write_price_per_1m: 18.75
   #       output_price_per_1m: 75.00
 
   # vertex:
