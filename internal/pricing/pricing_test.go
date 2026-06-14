@@ -102,6 +102,21 @@ func TestCompareWarmStayVsColdSwitch_UnknownModelNoSwitch(t *testing.T) {
 	}
 }
 
+func TestCompareWarmStayVsColdSwitch_NegativeTokensClamped(t *testing.T) {
+	tbl := twoModelTable()
+	// Negative estimates must clamp to zero, never produce a negative cost. With
+	// all token fields negative, both projected costs are 0 and nothing "saves".
+	cmp := tbl.CompareWarmStayVsColdSwitch("sonnet", "haiku", RouteCostInputs{
+		PrefixTokens: -100, PerTurnInputTokens: -5, PerTurnOutputTokens: -5, RemainingTurns: 5,
+	})
+	if cmp.WarmStayUSD != 0 || cmp.ColdSwitchUSD != 0 {
+		t.Fatalf("negative tokens must clamp to zero cost: warm=%.6f cold=%.6f", cmp.WarmStayUSD, cmp.ColdSwitchUSD)
+	}
+	if cmp.SwitchSaves {
+		t.Fatal("no saving when both costs are zero")
+	}
+}
+
 func TestCompareWarmStayVsColdSwitch_UnsetCacheRatesPriceAtFullInput(t *testing.T) {
 	// A cold model with NO cache rates prices its warm tail (turns 2..N) at full
 	// input rate, not a discount. Confirm by comparing against a model that is

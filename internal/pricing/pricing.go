@@ -168,7 +168,14 @@ type RouteComparison struct {
 // cheaper tier actually wins once the cache-loss penalty is amortized. It does
 // NOT make or apply a routing decision. An unknown model id yields a zero cost
 // on that side (and SwitchSaves stays false unless the other side is also zero).
+// Negative token fields are clamped to zero; RemainingTurns below 1 is treated
+// as 1.
 func (t *Table) CompareWarmStayVsColdSwitch(warmModelID, coldModelID string, in RouteCostInputs) RouteComparison {
+	// Clamp token estimates to nonnegative: a negative estimate (bad caller math)
+	// must never produce a negative cost that flips SwitchSaves the wrong way.
+	in.PrefixTokens = max(in.PrefixTokens, 0)
+	in.PerTurnInputTokens = max(in.PerTurnInputTokens, 0)
+	in.PerTurnOutputTokens = max(in.PerTurnOutputTokens, 0)
 	turns := in.RemainingTurns
 	if turns < 1 {
 		turns = 1
