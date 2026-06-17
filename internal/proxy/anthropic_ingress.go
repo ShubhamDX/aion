@@ -564,12 +564,13 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(aResp)
 
 	// Gateway post-response hook (optional): record signed evidence for the
-	// Anthropic-ingress request, same as the OpenAI path, AFTER the response is
-	// served.
+	// Anthropic-ingress request, same as the OpenAI path. Dispatched
+	// ASYNCHRONOUSLY (after the response is written) so the hook cannot delay the
+	// served response, even via net/http response buffering before handler return.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
 		postMaterial := sessionMaterial
 		postMaterial.NextCachePrefixMaterialSHA256 = types.NextCachePrefixMaterial(req, resp.ChatResponse)
-		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
+		h.dispatchPostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:        requestID,
 			PrincipalID:      keyIDFromInfo(keyInfo),
 			RequestedModel:   model,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ShubhamDX/aion/internal/apikey"
@@ -41,6 +42,11 @@ type Handler struct {
 	// hooks is the optional gateway extension surface (an embedding product wraps
 	// the request lifecycle here). nil leaves OSS behavior unchanged.
 	hooks *types.GatewayHooks
+	// postResponseWG tracks in-flight asynchronous PostResponse hooks so shutdown
+	// can drain them before the embedding product closes its store. Without this a
+	// graceful shutdown could close the evidence store under a running hook,
+	// dropping the signed row (and racing the store).
+	postResponseWG sync.WaitGroup
 }
 
 // SetGatewayHooks attaches the optional pre-request / post-response hooks. nil
@@ -277,13 +283,15 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp.ChatResponse)
 
 	// Gateway post-response hook (optional): the embedding product records the
-	// signed evidence row for this completed request, AFTER the response is served.
+	// signed evidence row for this completed request. Dispatched ASYNCHRONOUSLY
+	// (after the response is written) so the hook's work cannot delay the served
+	// response, even via net/http response buffering before handler return.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
 		// Non-stream: the full response is available, so compute the next turn's
 		// prefix digest now.
 		postMaterial := sessionMaterial
 		postMaterial.NextCachePrefixMaterialSHA256 = types.NextCachePrefixMaterial(&req, resp.ChatResponse)
-		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
+		h.dispatchPostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:        requestID,
 			PrincipalID:      keyIDFromInfo(keyInfo),
 			RequestedModel:   model,

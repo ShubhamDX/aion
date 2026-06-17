@@ -3,10 +3,12 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/pricing"
@@ -35,18 +37,6 @@ func (stubProvider) SendStream(context.Context, *types.ChatCompletionRequest, st
 	return nil, nil
 }
 
-// orderWriter records, the first time the hook observes it, whether the response
-// body had already been written.
-type orderWriter struct {
-	*httptest.ResponseRecorder
-	written bool
-}
-
-func (w *orderWriter) Write(b []byte) (int, error) {
-	w.written = true
-	return w.ResponseRecorder.Write(b)
-}
-
 func stubHandler(content string) *Handler {
 	cfg := &config.Config{}
 	cfg.Providers.Bedrock = &config.ProviderConfig{
@@ -57,35 +47,64 @@ func stubHandler(content string) *Handler {
 	return &Handler{router: router.NewRouter(cfg, nil), registry: reg, pricing: pricing.NewTable(cfg.Providers)}
 }
 
-// The non-stream PostResponse hook must fire AFTER the response body is written,
-// so an embedding product's post-response work (evidence, schema validation)
-// cannot delay or block the served response.
-func TestChatCompletion_PostResponseRunsAfterWrite(t *testing.T) {
+// A slow PostResponse hook must NOT delay the customer response. Run a real
+// httptest.Server (ResponseRecorder cannot expose net/http buffering): the
+// client must read the full body while the hook is still blocked. A synchronous
+// hook would hold the body until handler return and this test would deadlock on
+// the read.
+func TestChatCompletion_PostResponseDoesNotDelayResponse(t *testing.T) {
 	h := stubHandler("hello")
-	w := &orderWriter{ResponseRecorder: httptest.NewRecorder()}
-	hookRan := false
-	bodyWrittenBeforeHook := false
+	release := make(chan struct{})
+	hookEntered := make(chan struct{})
+	hookSawContent := make(chan []string, 1)
 	h.SetGatewayHooks(&types.GatewayHooks{
 		PostResponse: func(in types.PostResponseInput) {
-			hookRan = true
-			bodyWrittenBeforeHook = w.written // must already be true
-			if len(in.ResponseContents) != 1 || in.ResponseContents[0] != "hello" {
-				t.Errorf("hook must see all parsed choice contents, got %v", in.ResponseContents)
-			}
+			close(hookEntered)
+			hookSawContent <- in.ResponseContents
+			<-release // block until the client has already read the body
 		},
 	})
 
-	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"haiku","messages":[{"role":"user","content":"hi"}]}`))
-	h.ChatCompletion(w, r)
+	srv := httptest.NewServer(http.HandlerFunc(h.ChatCompletion))
+	defer srv.Close()
 
-	if !hookRan {
-		t.Fatal("PostResponse hook did not run")
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"haiku","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
 	}
-	if !bodyWrittenBeforeHook {
-		t.Fatal("PostResponse must run AFTER the response body is written")
+	defer resp.Body.Close()
+
+	// Read the full body with a deadline. If the hook were synchronous this read
+	// would not complete until release is closed, so a timeout here is the failure.
+	bodyCh := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(resp.Body)
+		bodyCh <- b
+	}()
+
+	var body []byte
+	select {
+	case body = <-bodyCh:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("response body was delayed by the PostResponse hook (still blocked after 2s)")
 	}
-	if w.Body.Len() == 0 {
+	if len(body) == 0 {
+		close(release)
 		t.Fatal("response body must be served")
 	}
+
+	// The hook still runs (asynchronously) and sees all choice contents.
+	select {
+	case <-hookEntered:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("PostResponse hook never ran")
+	}
+	got := <-hookSawContent
+	if len(got) != 1 || got[0] != "hello" {
+		t.Errorf("hook must see all parsed choice contents, got %v", got)
+	}
+	close(release)
 }
