@@ -576,6 +576,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			RequestDigest:   types.RequestContentDigest(req),
 			ResponseDigest:  types.ResponseContentDigest(resp.ChatResponse),
 			SessionMaterial: postMaterial,
+			ResponseContent: types.ResponseContentString(resp.ChatResponse),
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
 

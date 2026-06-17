@@ -98,6 +98,17 @@ func ResponseContentDigest(resp *ChatCompletionResponse) string {
 	return digestJSON(gs)
 }
 
+// ResponseContentString returns the first choice's assistant message content as
+// a plain string, for in-memory response-shape validation by an embedding
+// product. "" when there are no choices. It is the raw content; callers must
+// not persist or sign it.
+func ResponseContentString(resp *ChatCompletionResponse) string {
+	if resp == nil || len(resp.Choices) == 0 {
+		return ""
+	}
+	return resp.Choices[0].Message.ContentString()
+}
+
 // digestJSON marshals v to canonical JSON and returns its sha256 hex.
 func digestJSON(v any) string {
 	b, err := json.Marshal(v)
@@ -234,6 +245,13 @@ type PostResponseInput struct {
 	// prefix digest is "" (the stream is not buffered to compute it) and the
 	// embedding product safe-degrades. Digests only, never raw material.
 	SessionMaterial SessionMaterial
+	// ResponseContent is the parsed assistant message content of the first
+	// choice, passed IN MEMORY so an embedding product can validate the response
+	// shape (e.g. schema policy). It is "" on streaming (not reassembled) and on
+	// an empty/error response. The embedding product MUST NOT persist or sign it;
+	// it is the live body, the same trust level as PreRequestInput.Request. The
+	// proxy never logs or stores it.
+	ResponseContent string
 }
 
 // PreRequestInput.RequestDigest mirror: the pre-request hook also needs the
