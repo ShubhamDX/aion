@@ -33,9 +33,28 @@ func (p stubProvider) Send(context.Context, *types.ChatCompletionRequest, string
 		},
 	}, nil
 }
-func (stubProvider) SendStream(context.Context, *types.ChatCompletionRequest, string) (provider.StreamReader, error) {
-	return nil, nil
+func (p stubProvider) SendStream(context.Context, *types.ChatCompletionRequest, string) (provider.StreamReader, error) {
+	return &stubStream{content: p.content}, nil
 }
+
+// stubStream emits one content chunk (with usage) then io.EOF.
+type stubStream struct {
+	content string
+	done    bool
+}
+
+func (s *stubStream) ReadChunk() (*types.ChatCompletionChunk, error) {
+	if s.done {
+		return nil, io.EOF
+	}
+	s.done = true
+	content := s.content
+	return &types.ChatCompletionChunk{
+		Choices: []types.ChunkChoice{{Index: 0, Delta: types.ChunkDelta{Content: &content}}},
+		Usage:   &types.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}, nil
+}
+func (s *stubStream) Close() error { return nil }
 
 func stubHandler(content string) *Handler {
 	cfg := &config.Config{}
@@ -107,4 +126,63 @@ func TestChatCompletion_PostResponseDoesNotDelayResponse(t *testing.T) {
 		t.Errorf("hook must see all parsed choice contents, got %v", got)
 	}
 	close(release)
+}
+
+// The streaming path must also dispatch PostResponse asynchronously: a slow hook
+// cannot delay stream completion, and DrainPostResponse must track the hook.
+func TestChatCompletion_StreamingPostResponseIsAsync(t *testing.T) {
+	h := stubHandler("hello")
+	release := make(chan struct{})
+	hookDone := make(chan struct{})
+	h.SetGatewayHooks(&types.GatewayHooks{
+		PostResponse: func(in types.PostResponseInput) {
+			if !in.Stream {
+				t.Errorf("streaming hook must carry Stream=true")
+			}
+			<-release // block until the client has the full stream
+			close(hookDone)
+		},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(h.ChatCompletion))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"haiku","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// The full SSE stream must complete while the hook is still blocked.
+	bodyCh := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(resp.Body)
+		bodyCh <- b
+	}()
+	select {
+	case b := <-bodyCh:
+		if len(b) == 0 {
+			close(release)
+			t.Fatal("stream body must be served")
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("streaming response was delayed by the PostResponse hook")
+	}
+
+	// DrainPostResponse must block until the (still-blocked) hook finishes.
+	drained := make(chan struct{})
+	go func() {
+		h.DrainPostResponse()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		t.Fatal("DrainPostResponse returned before the in-flight hook finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-hookDone
+	<-drained // now completes
 }

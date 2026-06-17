@@ -124,13 +124,16 @@ func (h *Handler) handleStream(
 		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
 	}
 
-	// Gateway post-response hook (optional).
+	// Gateway post-response hook (optional). Dispatched ASYNCHRONOUSLY (same
+	// contract as the non-stream paths): the hook cannot delay stream completion,
+	// a hook panic cannot crash the proxy, and DrainPostResponse tracks it.
 	if h.hooks != nil && h.hooks.PostResponse != nil {
 		// Streaming: the response body is not reassembled, so the next-turn prefix
-		// digest stays "" (we do NOT buffer the stream to compute it). Stickiness
-		// for the NEXT turn safe-degrades; this turn's session + prefix material is
-		// still available from the request.
-		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
+		// digest stays "" (we do NOT buffer the stream to compute it) and
+		// ResponseContents stays nil (an embedding product safe-degrades, e.g.
+		// schema observe writes no row on a stream). This turn's session + prefix
+		// material is still available from the request.
+		h.dispatchPostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:       requestID,
 			PrincipalID:     keyIDFromInfo(keyInfo),
 			RequestedModel:  req.Model,

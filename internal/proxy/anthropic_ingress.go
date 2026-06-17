@@ -818,10 +818,14 @@ func (h *Handler) handleAnthropicStream(
 	}
 
 	// Gateway post-response hook (optional). Streamed content is not reassembled,
-	// so the output digest is empty (correlation-only output anchor).
+	// so the output digest is empty (correlation-only output anchor). Dispatched
+	// ASYNCHRONOUSLY (same contract as the non-stream paths): the hook cannot delay
+	// stream completion, cannot crash the proxy on panic, and is drained on
+	// shutdown.
 	if h.hooks != nil && h.hooks.PostResponse != nil {
-		// Streaming: next-turn prefix digest stays "" (stream not buffered).
-		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
+		// Streaming: next-turn prefix digest stays "" (stream not buffered) and
+		// ResponseContents stays nil (an embedding product safe-degrades).
+		h.dispatchPostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:       requestID,
 			PrincipalID:     keyIDFromInfo(keyInfo),
 			RequestedModel:  req.Model,
