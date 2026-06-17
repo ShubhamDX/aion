@@ -59,6 +59,7 @@ type App struct {
 	store         *telemetry.Store
 	cancel        context.CancelFunc
 	localProvider *provider.LocalProvider
+	proxyHandler  *proxy.Handler
 }
 
 // Build constructs an App from the given options. It loads config, initializes
@@ -225,8 +226,15 @@ func Build(opts Options) (*App, error) {
 		store:         store,
 		cancel:        cancel,
 		localProvider: localProvider,
+		proxyHandler:  proxyHandler,
 	}, nil
 }
+
+// DrainPostResponse blocks until all in-flight asynchronous PostResponse hooks
+// finish. An embedding product calls this during shutdown, after the HTTP
+// server has stopped and before it closes its evidence store, so an async
+// schema/evidence hook is never cut off mid-write.
+func (a *App) DrainPostResponse() { a.proxyHandler.DrainPostResponse() }
 
 // Config returns the loaded configuration.
 func (a *App) Config() *config.Config {
@@ -271,6 +279,12 @@ func (a *App) Run() error {
 	if err := a.srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown error", "error", err)
 	}
+
+	// Drain in-flight async PostResponse hooks before tearing down: the server no
+	// longer accepts requests, so this finishes the evidence/schema writes already
+	// dispatched, ahead of any store close (the embedding product also closes its
+	// own store via its runtime closer).
+	a.proxyHandler.DrainPostResponse()
 
 	// Shutdown local provider (managed llama-server).
 	if a.localProvider != nil {
