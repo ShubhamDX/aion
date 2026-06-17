@@ -98,15 +98,21 @@ func ResponseContentDigest(resp *ChatCompletionResponse) string {
 	return digestJSON(gs)
 }
 
-// ResponseContentString returns the first choice's assistant message content as
-// a plain string, for in-memory response-shape validation by an embedding
-// product. "" when there are no choices. It is the raw content; callers must
-// not persist or sign it.
-func ResponseContentString(resp *ChatCompletionResponse) string {
+// ResponseContentStrings returns EVERY choice's assistant message content as a
+// slice, in choice order, for in-memory response-shape validation by an
+// embedding product. nil when there are no choices. All choices are returned
+// (not just the first) so a validator sees every served choice: with n > 1 the
+// first choice could pass while a later served one fails. It is the raw content;
+// callers must not persist or sign it.
+func ResponseContentStrings(resp *ChatCompletionResponse) []string {
 	if resp == nil || len(resp.Choices) == 0 {
-		return ""
+		return nil
 	}
-	return resp.Choices[0].Message.ContentString()
+	out := make([]string, 0, len(resp.Choices))
+	for _, c := range resp.Choices {
+		out = append(out, c.Message.ContentString())
+	}
+	return out
 }
 
 // digestJSON marshals v to canonical JSON and returns its sha256 hex.
@@ -245,13 +251,14 @@ type PostResponseInput struct {
 	// prefix digest is "" (the stream is not buffered to compute it) and the
 	// embedding product safe-degrades. Digests only, never raw material.
 	SessionMaterial SessionMaterial
-	// ResponseContent is the parsed assistant message content of the first
-	// choice, passed IN MEMORY so an embedding product can validate the response
-	// shape (e.g. schema policy). It is "" on streaming (not reassembled) and on
-	// an empty/error response. The embedding product MUST NOT persist or sign it;
-	// it is the live body, the same trust level as PreRequestInput.Request. The
-	// proxy never logs or stores it.
-	ResponseContent string
+	// ResponseContents is the parsed assistant message content of EVERY response
+	// choice (choice order), passed IN MEMORY so an embedding product can validate
+	// the response shape (e.g. schema policy) across all served choices, not just
+	// the first. It is nil on streaming (not reassembled) and on an empty/error
+	// response. The embedding product MUST NOT persist or sign it; it is the live
+	// body, the same trust level as PreRequestInput.Request. The proxy never logs
+	// or stores it.
+	ResponseContents []string
 }
 
 // PreRequestInput.RequestDigest mirror: the pre-request hook also needs the

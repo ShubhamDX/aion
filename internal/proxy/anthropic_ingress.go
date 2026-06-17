@@ -554,38 +554,41 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
 	}
 
+	// Write response FIRST (same ordering as the OpenAI path): the customer
+	// response is fully served before the post-response hook runs, so the hook's
+	// evidence recording / response-shape validation can never delay or block the
+	// served response.
+	aResp := translateOpenAIToAnthropic(resp.ChatResponse)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(aResp)
+
 	// Gateway post-response hook (optional): record signed evidence for the
-	// Anthropic-ingress request, same as the OpenAI path.
+	// Anthropic-ingress request, same as the OpenAI path, AFTER the response is
+	// served.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
 		postMaterial := sessionMaterial
 		postMaterial.NextCachePrefixMaterialSHA256 = types.NextCachePrefixMaterial(req, resp.ChatResponse)
 		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
-			RequestID:       requestID,
-			PrincipalID:     keyIDFromInfo(keyInfo),
-			RequestedModel:  model,
-			RoutedModel:     selectedModel.ID,
-			RoutedProvider:  selectedModel.Provider,
-			Tier:            tier,
-			InputTokens:     resp.ChatResponse.Usage.PromptTokens,
-			OutputTokens:    resp.ChatResponse.Usage.CompletionTokens,
-			CostUSD:         costUSD,
-			SavingsUSD:      savingsUSD,
-			LatencyMS:       time.Since(start).Milliseconds(),
-			StatusCode:      resp.StatusCode,
-			Stream:          false,
-			RequestDigest:   types.RequestContentDigest(req),
-			ResponseDigest:  types.ResponseContentDigest(resp.ChatResponse),
-			SessionMaterial: postMaterial,
-			ResponseContent: types.ResponseContentString(resp.ChatResponse),
+			RequestID:        requestID,
+			PrincipalID:      keyIDFromInfo(keyInfo),
+			RequestedModel:   model,
+			RoutedModel:      selectedModel.ID,
+			RoutedProvider:   selectedModel.Provider,
+			Tier:             tier,
+			InputTokens:      resp.ChatResponse.Usage.PromptTokens,
+			OutputTokens:     resp.ChatResponse.Usage.CompletionTokens,
+			CostUSD:          costUSD,
+			SavingsUSD:       savingsUSD,
+			LatencyMS:        time.Since(start).Milliseconds(),
+			StatusCode:       resp.StatusCode,
+			Stream:           false,
+			RequestDigest:    types.RequestContentDigest(req),
+			ResponseDigest:   types.ResponseContentDigest(resp.ChatResponse),
+			SessionMaterial:  postMaterial,
+			ResponseContents: types.ResponseContentStrings(resp.ChatResponse),
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
-
-	// Translate OpenAI response -> Anthropic response.
-	aResp := translateOpenAIToAnthropic(resp.ChatResponse)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(aResp)
 }
 
 // ---------- streaming ----------

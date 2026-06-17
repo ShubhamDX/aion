@@ -267,38 +267,42 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
 	}
 
+	// Write response FIRST, so the customer response is fully served before the
+	// post-response hook runs. The hook records signed evidence (and an embedding
+	// product may validate the response shape there); doing that work before the
+	// write would let it delay or, on a panic, block the served response. The
+	// contract is that PostResponse observes a response the client already has.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	json.NewEncoder(w).Encode(resp.ChatResponse)
+
 	// Gateway post-response hook (optional): the embedding product records the
-	// signed evidence row for this completed request.
+	// signed evidence row for this completed request, AFTER the response is served.
 	if h.hooks != nil && h.hooks.PostResponse != nil && resp.ChatResponse != nil {
 		// Non-stream: the full response is available, so compute the next turn's
 		// prefix digest now.
 		postMaterial := sessionMaterial
 		postMaterial.NextCachePrefixMaterialSHA256 = types.NextCachePrefixMaterial(&req, resp.ChatResponse)
 		h.hooks.PostResponse(postResponseInputWithUsage(types.PostResponseInput{
-			RequestID:       requestID,
-			PrincipalID:     keyIDFromInfo(keyInfo),
-			RequestedModel:  model,
-			RoutedModel:     selectedModel.ID,
-			RoutedProvider:  selectedModel.Provider,
-			Tier:            tier,
-			InputTokens:     resp.ChatResponse.Usage.PromptTokens,
-			OutputTokens:    resp.ChatResponse.Usage.CompletionTokens,
-			CostUSD:         costUSD,
-			SavingsUSD:      savingsUSD,
-			LatencyMS:       time.Since(start).Milliseconds(),
-			StatusCode:      resp.StatusCode,
-			Stream:          false,
-			RequestDigest:   types.RequestContentDigest(&req),
-			ResponseDigest:  types.ResponseContentDigest(resp.ChatResponse),
-			SessionMaterial: postMaterial,
-			ResponseContent: types.ResponseContentString(resp.ChatResponse),
+			RequestID:        requestID,
+			PrincipalID:      keyIDFromInfo(keyInfo),
+			RequestedModel:   model,
+			RoutedModel:      selectedModel.ID,
+			RoutedProvider:   selectedModel.Provider,
+			Tier:             tier,
+			InputTokens:      resp.ChatResponse.Usage.PromptTokens,
+			OutputTokens:     resp.ChatResponse.Usage.CompletionTokens,
+			CostUSD:          costUSD,
+			SavingsUSD:       savingsUSD,
+			LatencyMS:        time.Since(start).Milliseconds(),
+			StatusCode:       resp.StatusCode,
+			Stream:           false,
+			RequestDigest:    types.RequestContentDigest(&req),
+			ResponseDigest:   types.ResponseContentDigest(resp.ChatResponse),
+			SessionMaterial:  postMaterial,
+			ResponseContents: types.ResponseContentStrings(resp.ChatResponse),
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
-
-	// Write response.
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	json.NewEncoder(w).Encode(resp.ChatResponse)
 }
 
 // estimatedCost estimates the cost of a request against a model before dispatch,
