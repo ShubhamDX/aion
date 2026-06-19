@@ -186,12 +186,29 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-AION-Decision", "route")
 			}
 		}
-		// Carry the resolved schema settings (SP2b-2) on the request. This is an
-		// in-memory `json:"-"` field: it never serializes upstream, and no provider
-		// path reads it yet. It only travels alongside the request for a later slice.
+		// Carry any schema settings the PreRequest decision resolved (SP2b-2). The
+		// post-route seam below supersedes this when present; it is kept so a hook
+		// that resolves at PreRequest time still works. `json:"-"`, never upstream.
 		if dec.SchemaSettings != nil {
 			req.SchemaSettings = dec.SchemaSettings
 		}
+	}
+
+	// 2c. Post-route schema-settings seam (SP2b-3a). Runs AFTER any route override,
+	// so selectedModel is the FINAL route, but BEFORE dispatch. The embedding
+	// product resolves schema settings against the final provider/model. The
+	// result is stamped onto the request's json:"-" carrier; no provider reads it,
+	// so it cannot change a served response or an upstream payload.
+	if h.hooks != nil && h.hooks.ResolveSchemaSettings != nil {
+		req.SchemaSettings = h.hooks.ResolveSchemaSettings(types.PostRouteInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: model,
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			RequestDigest:  types.RequestContentDigest(&req),
+		})
 	}
 
 	// 3. Budget check.

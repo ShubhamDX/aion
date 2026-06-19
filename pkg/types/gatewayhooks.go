@@ -139,6 +139,32 @@ func digestJSON(v any) string {
 type GatewayHooks struct {
 	PreRequest   func(PreRequestInput) PreRequestDecision
 	PostResponse func(PostResponseInput)
+	// ResolveSchemaSettings is an optional post-route seam. The proxy calls it
+	// AFTER PreRequest and AFTER any route override is resolved, so the FINAL
+	// provider/model is known, but BEFORE provider dispatch. The embedding product
+	// resolves the schema-policy provider settings against the final route and
+	// returns them; the proxy stamps the result onto req.SchemaSettings (the
+	// json:"-" carrier). When this hook is installed, its return value REPLACES
+	// any carrier a PreRequest decision set; return nil to clear it. A nil hook
+	// (not installed) leaves whatever PreRequest set untouched. No provider reads
+	// the carrier yet, so this cannot change a served response or upstream payload.
+	ResolveSchemaSettings func(PostRouteInput) *SchemaSettings
+}
+
+// PostRouteInput is the final-route view handed to ResolveSchemaSettings. The
+// provider/model/tier here are the FINAL ones after route override (unlike
+// PreRequestInput, which carries the pre-override route). RequestedModel is the
+// caller's original model string. It carries no raw bodies; RequestDigest is the
+// same one-way digest the other hooks receive.
+type PostRouteInput struct {
+	RequestID      string
+	PrincipalID    string
+	RequestedModel string
+	// RoutedProvider / RoutedModel / Tier are the FINAL route after any override.
+	RoutedProvider string
+	RoutedModel    string
+	Tier           Tier
+	RequestDigest  string
 }
 
 // PreRequestInput is the classified, routed view of a request before dispatch.
