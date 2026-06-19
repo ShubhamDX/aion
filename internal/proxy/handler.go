@@ -433,6 +433,11 @@ func (h *Handler) resolveRouteOverride(dec types.PreRequestDecision, current *ro
 //     on the wire because the caller already set response_format, which the
 //     provider will not override. Serving anyway would silently bypass a
 //     fail-closed provider-native policy with an unconstrained response.
+//  3. Native output is MANDATORY but the request is streaming. A stream can emit
+//     native output, but AION does not reassemble the stream, so the schema row
+//     cannot validate it: there would be native emission with no signed evidence.
+//     SP2b-3b refuses mandatory native on streams (signed streaming evidence is a
+//     later slice). Observe/optional streams are unaffected.
 //
 // An advisory fallback (FailClosed=false, MustEmitNative=false) dispatches.
 func schemaFailClosed(req *types.ChatCompletionRequest) bool {
@@ -445,6 +450,10 @@ func schemaFailClosed(req *types.ChatCompletionRequest) bool {
 	}
 	if ss.MustEmitNative && req.ResponseFormat != nil {
 		// Mandatory native, but the caller's response_format blocks emission.
+		return true
+	}
+	if ss.MustEmitNative && req.Stream {
+		// Mandatory native on a stream: emission possible but unverifiable.
 		return true
 	}
 	return false

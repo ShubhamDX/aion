@@ -153,6 +153,46 @@ func TestSchemaFailClosed_MustEmitNativeBlockedByCallerFormat(t *testing.T) {
 	}
 }
 
+// SP2b-3b: mandatory native on a STREAMING request must fail closed before
+// dispatch. A stream could emit native output, but AION cannot reassemble it to
+// validate, so there would be native emission with no signed evidence.
+func TestSchemaFailClosed_MustEmitNativeBlocksStreaming(t *testing.T) {
+	h := twoProviderHandler(t)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+			return &types.SchemaSettings{
+				Mode: "provider_native", SchemaPolicyID: "sp-x", MustEmitNative: true,
+				SchemaBody: &types.JSONSchemaSpec{Name: "orders", Schema: json.RawMessage(`{"type":"object"}`)},
+			}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("mandatory native on a stream must fail closed, got %d", w.Code)
+	}
+}
+
+// An OPTIONAL native stream (not mandatory) is NOT blocked by the fail-closed
+// gate: schemaFailClosed returns false, so the request proceeds to dispatch
+// (native is best-effort; no evidence gap to enforce). Asserted at the gate
+// rather than end-to-end (the streaming dispatch needs provider stream plumbing).
+func TestSchemaFailClosed_OptionalNativeStreamNotGated(t *testing.T) {
+	req := &types.ChatCompletionRequest{
+		Model:  "gpt-cheap",
+		Stream: true,
+		SchemaSettings: &types.SchemaSettings{
+			Mode: "provider_native", SchemaPolicyID: "sp-x", MustEmitNative: false,
+			SchemaBody: &types.JSONSchemaSpec{Name: "orders", Schema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	if schemaFailClosed(req) {
+		t.Fatal("optional native stream must NOT be gated")
+	}
+}
+
 // Mandatory native with NO caller response_format dispatches (emission happens).
 func TestSchemaFailClosed_MustEmitNativeDispatchesWhenEmittable(t *testing.T) {
 	h := twoProviderHandler(t)
