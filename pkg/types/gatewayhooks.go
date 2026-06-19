@@ -144,9 +144,10 @@ type GatewayHooks struct {
 	// provider/model is known, but BEFORE provider dispatch. The embedding product
 	// resolves the schema-policy provider settings against the final route and
 	// returns them; the proxy stamps the result onto req.SchemaSettings (the
-	// json:"-" carrier). nil leaves req.SchemaSettings whatever PreRequest set, or
-	// unset. Returning nil clears any carrier. No provider reads the carrier yet,
-	// so this cannot change a served response or an upstream payload.
+	// json:"-" carrier). When this hook is installed, its return value REPLACES
+	// any carrier a PreRequest decision set; return nil to clear it. A nil hook
+	// (not installed) leaves whatever PreRequest set untouched. No provider reads
+	// the carrier yet, so this cannot change a served response or upstream payload.
 	ResolveSchemaSettings func(PostRouteInput) *SchemaSettings
 }
 
