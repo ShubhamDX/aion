@@ -130,6 +130,49 @@ func TestSchemaFailClosed_BlocksBeforeDispatch(t *testing.T) {
 	}
 }
 
+// SP2b-3b: a mandatory native policy (MustEmitNative) whose emission is blocked
+// by a caller-supplied response_format must fail closed before dispatch, rather
+// than silently serving an unconstrained response.
+func TestSchemaFailClosed_MustEmitNativeBlockedByCallerFormat(t *testing.T) {
+	h := twoProviderHandler(t)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+			return &types.SchemaSettings{
+				Mode: "provider_native", SchemaPolicyID: "sp-x", MustEmitNative: true,
+				SchemaBody: &types.JSONSchemaSpec{Name: "orders", Schema: json.RawMessage(`{"type":"object"}`)},
+			}
+		},
+	})
+	w := httptest.NewRecorder()
+	// Caller sets response_format -> provider would skip native emission.
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","response_format":{"type":"json_object"},"messages":[{"role":"user","content":"hi"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("mandatory native blocked by caller format must fail closed, got %d", w.Code)
+	}
+}
+
+// Mandatory native with NO caller response_format dispatches (emission happens).
+func TestSchemaFailClosed_MustEmitNativeDispatchesWhenEmittable(t *testing.T) {
+	h := twoProviderHandler(t)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+			return &types.SchemaSettings{
+				Mode: "provider_native", SchemaPolicyID: "sp-x", MustEmitNative: true,
+				SchemaBody: &types.JSONSchemaSpec{Name: "orders", Schema: json.RawMessage(`{"type":"object"}`)},
+			}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"hi"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mandatory native with emittable route must dispatch, got %d", w.Code)
+	}
+}
+
 // An optional (non-fail-closed) resolution dispatches normally.
 func TestSchemaFailClosed_OptionalDispatches(t *testing.T) {
 	h := twoProviderHandler(t)

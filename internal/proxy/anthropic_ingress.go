@@ -523,7 +523,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 6b. Schema fail-closed gate (SP2b-3b): a mandatory schema policy whose mode
 	// cannot be honored on the final route returns a schema error before dispatch.
-	if schemaFailClosed(req.SchemaSettings) {
+	if schemaFailClosed(req) {
 		w.Header().Set("X-AION-Decision", "schema_fail_closed")
 		writeAnthropicError(w, http.StatusUnprocessableEntity, "invalid_request_error",
 			"schema policy requires structured output the routed model cannot honor")

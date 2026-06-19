@@ -247,7 +247,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// dispatch, rather than silently serving an unconstrained response. Scoped to
 	// the schema-settings carrier the post-route seam set; only mandatory
 	// fail-closed acts (an optional fallback dispatches normally).
-	if schemaFailClosed(req.SchemaSettings) {
+	if schemaFailClosed(&req) {
 		w.Header().Set("X-AION-Decision", "schema_fail_closed")
 		writeError(w, http.StatusUnprocessableEntity, "schema_policy_unsatisfiable",
 			"schema policy requires structured output the routed model cannot honor")
@@ -423,12 +423,31 @@ func (h *Handler) resolveRouteOverride(dec types.PreRequestDecision, current *ro
 }
 
 // schemaFailClosed reports whether a request must be refused before dispatch
-// because a mandatory schema policy cannot be honored on the final route. SP2b-3b
-// acts on the FailClosed flag the embedding product's post-route seam set; a nil
-// carrier or an advisory fallback (FailClosed=false) dispatches normally. The
-// flag is scoped to the schema policy and never affects requests without one.
-func schemaFailClosed(ss *types.SchemaSettings) bool {
-	return ss != nil && ss.FailClosed
+// because a mandatory schema policy cannot be honored on the final route. Two
+// cases, both scoped to the schema-settings carrier (requests without a schema
+// policy are never affected):
+//
+//  1. The post-route resolver already flagged FailClosed (mandatory mode the
+//     final route cannot honor at all).
+//  2. Native output is MANDATORY (MustEmitNative) but cannot actually be emitted
+//     on the wire because the caller already set response_format, which the
+//     provider will not override. Serving anyway would silently bypass a
+//     fail-closed provider-native policy with an unconstrained response.
+//
+// An advisory fallback (FailClosed=false, MustEmitNative=false) dispatches.
+func schemaFailClosed(req *types.ChatCompletionRequest) bool {
+	ss := req.SchemaSettings
+	if ss == nil {
+		return false
+	}
+	if ss.FailClosed {
+		return true
+	}
+	if ss.MustEmitNative && req.ResponseFormat != nil {
+		// Mandatory native, but the caller's response_format blocks emission.
+		return true
+	}
+	return false
 }
 
 // decisionMessage returns the decision's client-facing message, or a default.

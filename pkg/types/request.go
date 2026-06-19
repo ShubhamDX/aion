@@ -62,6 +62,13 @@ type SchemaSettings struct {
 	// Mode==provider_native, and MUST NEVER be persisted, logged or signed (AION
 	// signs only SchemaHash). nil when no native emission applies.
 	SchemaBody *JSONSchemaSpec
+	// MustEmitNative marks that native structured output is MANDATORY for this
+	// request: the embedding product set a fail-closed policy that the final route
+	// can honor. The gateway refuses to serve before dispatch if native emission
+	// cannot actually happen (e.g. the caller already set response_format, which
+	// the provider will not override), rather than serving an unconstrained
+	// response. false leaves native emission best-effort.
+	MustEmitNative bool
 }
 
 // Message represents a single message in a chat conversation.
