@@ -12,3 +12,4 @@ type FunctionCall = pkgtypes.FunctionCall
 type Tool = pkgtypes.Tool
 type FunctionDef = pkgtypes.FunctionDef
 type ResponseFormat = pkgtypes.ResponseFormat
+type SchemaSettings = pkgtypes.SchemaSettings

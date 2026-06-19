@@ -1,6 +1,45 @@
 package provider
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/ShubhamDX/aion/pkg/types"
+)
+
+// SP2b-2 golden test for a TRANSLATED provider: carrying schema settings must not
+// change the Anthropic upstream payload. translateRequest builds its own struct
+// field-by-field and never reads SchemaSettings, so the bytes must match.
+func TestAnthropicTranslate_SchemaSettingsNeverLeak(t *testing.T) {
+	p := &AnthropicProvider{}
+	base := &types.ChatCompletionRequest{
+		Model:    "claude-x",
+		Messages: []types.Message{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+	}
+	withCarrier := *base
+	withCarrier.SchemaSettings = &types.SchemaSettings{
+		Mode: "tool_schema", SchemaPolicyID: "sp-orders", SchemaVersion: "1",
+		SchemaHash: "deadbeef", FailClosed: true, Reason: "tool_schema_supported",
+	}
+
+	bare, err := json.Marshal(p.translateRequest(base, "claude-3", false))
+	if err != nil {
+		t.Fatalf("marshal bare: %v", err)
+	}
+	carrier, err := json.Marshal(p.translateRequest(&withCarrier, "claude-3", false))
+	if err != nil {
+		t.Fatalf("marshal carrier: %v", err)
+	}
+	if string(bare) != string(carrier) {
+		t.Fatalf("schema settings changed the Anthropic payload:\n bare:    %s\n carrier: %s", bare, carrier)
+	}
+	for _, banned := range []string{"tool_schema", "sp-orders", "deadbeef", "schema"} {
+		if strings.Contains(string(carrier), banned) {
+			t.Fatalf("schema setting %q leaked into Anthropic payload: %s", banned, carrier)
+		}
+	}
+}
 
 func TestUsageFromAnthropicIncludesCacheTokens(t *testing.T) {
 	usage := usageFromAnthropic(anthropicUsage{

@@ -186,6 +186,12 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-AION-Decision", "route")
 			}
 		}
+		// Carry the resolved schema settings (SP2b-2) on the request. This is an
+		// in-memory `json:"-"` field: it never serializes upstream, and no provider
+		// path reads it yet. It only travels alongside the request for a later slice.
+		if dec.SchemaSettings != nil {
+			req.SchemaSettings = dec.SchemaSettings
+		}
 	}
 
 	// 3. Budget check.
