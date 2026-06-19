@@ -209,6 +209,11 @@ type PreRequestDecision struct {
 	LedgerRowID            string
 	// Message is the client-facing error text on Block / Hold.
 	Message string
+	// SchemaSettings, when non-nil, is the resolved schema-policy provider
+	// settings the embedding product wants carried on the request. The proxy
+	// stamps it onto the request's `json:"-"` SchemaSettings field after the hook;
+	// SP2b-2 only carries it (no provider activates on it, no payload changes).
+	SchemaSettings *SchemaSettings
 }
 
 // PostResponseInput is the completed-request view for recording. Tokens + cost

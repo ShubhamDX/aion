@@ -465,6 +465,11 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-AION-Decision", "route")
 			}
 		}
+		// Carry resolved schema settings (SP2b-2): in-memory `json:"-"` field, never
+		// serialized upstream, no provider acts on it yet.
+		if dec.SchemaSettings != nil {
+			req.SchemaSettings = dec.SchemaSettings
+		}
 	}
 
 	// 4. Budget check.

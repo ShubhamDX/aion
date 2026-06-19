@@ -22,6 +22,40 @@ type ChatCompletionRequest struct {
 	ResponseFormat   *ResponseFormat  `json:"response_format,omitempty"`
 	Seed             *int             `json:"seed,omitempty"`
 	AIONPreferences  *AIONPreferences `json:"aion_preferences,omitempty"`
+	// SchemaSettings carries the resolved schema-policy provider settings for an
+	// embedding product (e.g. AION Enterprise). It is `json:"-"`: it NEVER
+	// serializes onto any upstream provider payload. SP2b-2 only carries it; no
+	// provider path reads it to mutate a request yet. nil leaves behavior
+	// unchanged.
+	SchemaSettings *SchemaSettings `json:"-"`
+}
+
+// SchemaSettings is the neutral, provider-agnostic carrier for resolved
+// schema-policy settings. It holds the resolved provider schema MODE and schema
+// IDENTITY metadata only; it contains NO schema body, NO prompt text and NO
+// response-format / tool-schema / envelope payload. It is an in-memory carrier
+// (request field is `json:"-"`) and must never be serialized to a provider.
+//
+// SP2b-2 populates and carries it; no provider activates on it. A later slice
+// (SP2b-3+) reads Mode to build a provider-native payload, gated behind a
+// per-provider golden test.
+type SchemaSettings struct {
+	// Mode is the resolved provider schema mode (validation_only, provider_native,
+	// tool_schema, prompt_envelope, none). In SP2b-2 observe traffic this is
+	// validation_only.
+	Mode string
+	// SchemaPolicyID / SchemaVersion / SchemaHash are schema IDENTITY only (the
+	// same one-way identifiers carried in signed evidence). No raw schema.
+	SchemaPolicyID string
+	SchemaVersion  string
+	SchemaHash     string
+	// FailClosed records that a mandatory enforcement could not be honored by the
+	// resolved provider path. SP2b-2 only CARRIES this fact; it does not block
+	// traffic. Acting on it is a later SP2b slice.
+	FailClosed bool
+	// Reason is the non-sensitive resolver reason label (for logs / later
+	// evidence). No prompt/response/schema content.
+	Reason string
 }
 
 // Message represents a single message in a chat conversation.

@@ -43,5 +43,10 @@ func upstreamPayload(req *types.ChatCompletionRequest, model string, stream bool
 	payload.Model = model
 	payload.Stream = stream
 	payload.AIONPreferences = nil
+	// SchemaSettings is an internal carrier and is `json:"-"`, so it never
+	// serializes; nil it here too as defense in depth, mirroring AIONPreferences,
+	// so a future struct change can never ship it upstream. SP2b-2 carries it but
+	// no provider acts on it.
+	payload.SchemaSettings = nil
 	return payload
 }
