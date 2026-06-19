@@ -465,11 +465,27 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-AION-Decision", "route")
 			}
 		}
-		// Carry resolved schema settings (SP2b-2): in-memory `json:"-"` field, never
-		// serialized upstream, no provider acts on it yet.
+		// Carry any schema settings the PreRequest decision resolved (SP2b-2). The
+		// post-route seam below supersedes this when present. `json:"-"`, never
+		// serialized upstream.
 		if dec.SchemaSettings != nil {
 			req.SchemaSettings = dec.SchemaSettings
 		}
+	}
+
+	// 3b. Post-route schema-settings seam (SP2b-3a): runs after any route override
+	// (final route known), before dispatch. Stamped onto the json:"-" carrier; no
+	// provider reads it, so no served-response or upstream-payload change.
+	if h.hooks != nil && h.hooks.ResolveSchemaSettings != nil {
+		req.SchemaSettings = h.hooks.ResolveSchemaSettings(types.PostRouteInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: model,
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			RequestDigest:  types.RequestContentDigest(req),
+		})
 	}
 
 	// 4. Budget check.
