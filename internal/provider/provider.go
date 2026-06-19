@@ -11,6 +11,12 @@ import (
 type Response struct {
 	ChatResponse *types.ChatCompletionResponse
 	StatusCode   int
+	// SchemaNativeEmitted reports whether this provider actually emitted native
+	// structured output (OpenAI response_format.json_schema) on the upstream
+	// request. It is the wire-truth an embedding product gates its evidence on: it
+	// is true ONLY when the schema body was placed on the dispatched payload.
+	// Default false (no native output emitted).
+	SchemaNativeEmitted bool
 }
 
 // StreamReader is an interface for reading streaming chunks.
@@ -45,8 +51,38 @@ func upstreamPayload(req *types.ChatCompletionRequest, model string, stream bool
 	payload.AIONPreferences = nil
 	// SchemaSettings is an internal carrier and is `json:"-"`, so it never
 	// serializes; nil it here too as defense in depth, mirroring AIONPreferences,
-	// so a future struct change can never ship it upstream. SP2b-2 carries it but
-	// no provider acts on it.
+	// so a future struct change can never ship it upstream. The OpenAI-native
+	// emission path (openAINativePayload) explicitly re-derives response_format
+	// from the carrier BEFORE calling this is irrelevant: it sets ResponseFormat on
+	// the returned payload, not the carrier.
 	payload.SchemaSettings = nil
 	return payload
+}
+
+// openAINativePayload builds the OpenAI upstream payload, activating native
+// structured output ONLY when the request carries SchemaSettings with
+// Mode==provider_native and a schema body. It returns the payload and whether
+// native output was emitted (the wire truth reported back via Response).
+//
+// This is the ONLY place AION sets response_format from a schema policy, and
+// only for the OpenAI-compatible provider. Any other mode, a missing body, or a
+// caller that already set response_format leaves the payload exactly as
+// upstreamPayload produced it (no partial schema, no clobber).
+func openAINativePayload(req *types.ChatCompletionRequest, model string, stream bool) (types.ChatCompletionRequest, bool) {
+	payload := upstreamPayload(req, model, stream)
+	ss := req.SchemaSettings
+	if ss == nil || ss.Mode != types.ProviderSchemaModeProviderNative || ss.SchemaBody == nil {
+		return payload, false
+	}
+	// Do not clobber a caller-supplied response_format: if the caller already
+	// asked for a specific format, AION does not override it. Native emission only
+	// fills an empty slot.
+	if payload.ResponseFormat != nil {
+		return payload, false
+	}
+	payload.ResponseFormat = &types.ResponseFormat{
+		Type:       "json_schema",
+		JSONSchema: ss.SchemaBody,
+	}
+	return payload, true
 }

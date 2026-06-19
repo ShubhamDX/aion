@@ -521,6 +521,15 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-AION-Provider", selectedModel.Provider)
 	w.Header().Set("X-Request-ID", requestID)
 
+	// 6b. Schema fail-closed gate (SP2b-3b): a mandatory schema policy whose mode
+	// cannot be honored on the final route returns a schema error before dispatch.
+	if schemaFailClosed(req) {
+		w.Header().Set("X-AION-Decision", "schema_fail_closed")
+		writeAnthropicError(w, http.StatusUnprocessableEntity, "invalid_request_error",
+			"schema policy requires structured output the routed model cannot honor")
+		return
+	}
+
 	// 7. Dispatch — streaming or non-streaming.
 	if req.Stream {
 		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)

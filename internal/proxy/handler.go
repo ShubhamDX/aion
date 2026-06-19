@@ -242,6 +242,18 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-AION-Provider", selectedModel.Provider)
 	w.Header().Set("X-Request-ID", requestID)
 
+	// 5b. Schema fail-closed gate (SP2b-3b): a mandatory schema policy whose native
+	// mode cannot be honored on the FINAL route returns a schema error BEFORE
+	// dispatch, rather than silently serving an unconstrained response. Scoped to
+	// the schema-settings carrier the post-route seam set; only mandatory
+	// fail-closed acts (an optional fallback dispatches normally).
+	if schemaFailClosed(&req) {
+		w.Header().Set("X-AION-Decision", "schema_fail_closed")
+		writeError(w, http.StatusUnprocessableEntity, "schema_policy_unsatisfiable",
+			"schema policy requires structured output the routed model cannot honor")
+		return
+	}
+
 	// 6. Dispatch -- streaming or non-streaming.
 	if req.Stream {
 		h.handleStream(w, r, &req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)
@@ -315,23 +327,24 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		postMaterial := sessionMaterial
 		postMaterial.NextCachePrefixMaterialSHA256 = types.NextCachePrefixMaterial(&req, resp.ChatResponse)
 		h.dispatchPostResponse(postResponseInputWithUsage(types.PostResponseInput{
-			RequestID:        requestID,
-			PrincipalID:      keyIDFromInfo(keyInfo),
-			RequestedModel:   model,
-			RoutedModel:      selectedModel.ID,
-			RoutedProvider:   selectedModel.Provider,
-			Tier:             tier,
-			InputTokens:      resp.ChatResponse.Usage.PromptTokens,
-			OutputTokens:     resp.ChatResponse.Usage.CompletionTokens,
-			CostUSD:          costUSD,
-			SavingsUSD:       savingsUSD,
-			LatencyMS:        time.Since(start).Milliseconds(),
-			StatusCode:       resp.StatusCode,
-			Stream:           false,
-			RequestDigest:    types.RequestContentDigest(&req),
-			ResponseDigest:   types.ResponseContentDigest(resp.ChatResponse),
-			SessionMaterial:  postMaterial,
-			ResponseContents: types.ResponseContentStrings(resp.ChatResponse),
+			RequestID:           requestID,
+			PrincipalID:         keyIDFromInfo(keyInfo),
+			RequestedModel:      model,
+			RoutedModel:         selectedModel.ID,
+			RoutedProvider:      selectedModel.Provider,
+			Tier:                tier,
+			InputTokens:         resp.ChatResponse.Usage.PromptTokens,
+			OutputTokens:        resp.ChatResponse.Usage.CompletionTokens,
+			CostUSD:             costUSD,
+			SavingsUSD:          savingsUSD,
+			LatencyMS:           time.Since(start).Milliseconds(),
+			StatusCode:          resp.StatusCode,
+			Stream:              false,
+			RequestDigest:       types.RequestContentDigest(&req),
+			ResponseDigest:      types.ResponseContentDigest(resp.ChatResponse),
+			SessionMaterial:     postMaterial,
+			ResponseContents:    types.ResponseContentStrings(resp.ChatResponse),
+			SchemaNativeEmitted: resp.SchemaNativeEmitted,
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
 }
@@ -407,6 +420,43 @@ func (h *Handler) resolveRouteOverride(dec types.PreRequestDecision, current *ro
 		return m, true, nil
 	}
 	return current, false, nil
+}
+
+// schemaFailClosed reports whether a request must be refused before dispatch
+// because a mandatory schema policy cannot be honored on the final route. Two
+// cases, both scoped to the schema-settings carrier (requests without a schema
+// policy are never affected):
+//
+//  1. The post-route resolver already flagged FailClosed (mandatory mode the
+//     final route cannot honor at all).
+//  2. Native output is MANDATORY (MustEmitNative) but cannot actually be emitted
+//     on the wire because the caller already set response_format, which the
+//     provider will not override. Serving anyway would silently bypass a
+//     fail-closed provider-native policy with an unconstrained response.
+//  3. Native output is MANDATORY but the request is streaming. A stream can emit
+//     native output, but AION does not reassemble the stream, so the schema row
+//     cannot validate it: there would be native emission with no signed evidence.
+//     SP2b-3b refuses mandatory native on streams (signed streaming evidence is a
+//     later slice). Observe/optional streams are unaffected.
+//
+// An advisory fallback (FailClosed=false, MustEmitNative=false) dispatches.
+func schemaFailClosed(req *types.ChatCompletionRequest) bool {
+	ss := req.SchemaSettings
+	if ss == nil {
+		return false
+	}
+	if ss.FailClosed {
+		return true
+	}
+	if ss.MustEmitNative && req.ResponseFormat != nil {
+		// Mandatory native, but the caller's response_format blocks emission.
+		return true
+	}
+	if ss.MustEmitNative && req.Stream {
+		// Mandatory native on a stream: emission possible but unverifiable.
+		return true
+	}
+	return false
 }
 
 // decisionMessage returns the decision's client-facing message, or a default.
