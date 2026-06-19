@@ -20,13 +20,19 @@ import (
 type sendableStub struct{ name string }
 
 func (s sendableStub) Name() string { return s.name }
-func (s sendableStub) Send(context.Context, *types.ChatCompletionRequest, string) (*provider.Response, error) {
+func (s sendableStub) Send(_ context.Context, req *types.ChatCompletionRequest, _ string) (*provider.Response, error) {
+	// Mimic the real OpenAI provider: it reports SchemaNativeEmitted=true when the
+	// carrier asked for provider_native with a body. A non-openai stub never does
+	// (other providers ignore the carrier).
+	emitted := s.name == "openai" && req.SchemaSettings != nil &&
+		req.SchemaSettings.Mode == types.ProviderSchemaModeProviderNative && req.SchemaSettings.SchemaBody != nil
 	return &provider.Response{
 		StatusCode: http.StatusOK,
 		ChatResponse: &types.ChatCompletionResponse{
 			Choices: []types.Choice{{Message: types.Message{Role: "assistant", Content: json.RawMessage(`"ok"`)}, FinishReason: "stop"}},
 			Usage:   types.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		},
+		SchemaNativeEmitted: emitted,
 	}, nil
 }
 func (s sendableStub) SendStream(context.Context, *types.ChatCompletionRequest, string) (provider.StreamReader, error) {
@@ -101,4 +107,97 @@ func TestResolveSchemaSettings_SeamFiresWithoutPreRequest(t *testing.T) {
 	if !called {
 		t.Fatal("seam must fire without a PreRequest hook")
 	}
+}
+
+// SP2b-3b: a mandatory fail-closed schema resolution returns a schema error
+// BEFORE dispatch (the request never reaches the provider).
+func TestSchemaFailClosed_BlocksBeforeDispatch(t *testing.T) {
+	h := twoProviderHandler(t)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+			return &types.SchemaSettings{Mode: "validation_only", FailClosed: true, SchemaPolicyID: "sp-x"}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"hi"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("mandatory fail-closed must return 422 before dispatch, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "schema_policy_unsatisfiable") {
+		t.Fatalf("must return the schema error, got %s", w.Body.String())
+	}
+}
+
+// An optional (non-fail-closed) resolution dispatches normally.
+func TestSchemaFailClosed_OptionalDispatches(t *testing.T) {
+	h := twoProviderHandler(t)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+			return &types.SchemaSettings{Mode: "validation_only", FailClosed: false, SchemaPolicyID: "sp-x"}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"hi"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("optional resolution must dispatch, got %d", w.Code)
+	}
+}
+
+// SP2b-3b confirmation: when the seam carries provider_native + schema body and
+// the FINAL route is the OpenAI-compatible provider, the post-response hook sees
+// SchemaNativeEmitted=true (the wire truth). A route AWAY from openai must NOT
+// confirm native.
+func TestSchemaNativeEmitted_ConfirmationFlows(t *testing.T) {
+	body := &types.JSONSchemaSpec{Name: "orders", Schema: json.RawMessage(`{"type":"object"}`)}
+
+	// Final route = openai (the stub Name "openai"): native emitted, confirmed.
+	t.Run("openai final route confirms", func(t *testing.T) {
+		h := twoProviderHandler(t)
+		var emitted bool
+		var ran bool
+		h.SetGatewayHooks(&types.GatewayHooks{
+			ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+				return &types.SchemaSettings{Mode: "provider_native", SchemaPolicyID: "sp-x", SchemaBody: body}
+			},
+			PostResponse: func(in types.PostResponseInput) { ran = true; emitted = in.SchemaNativeEmitted },
+		})
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"hi"}]}`))
+		h.ChatCompletion(w, r)
+		h.DrainPostResponse()
+		if !ran || !emitted {
+			t.Fatalf("openai native must confirm emission, ran=%v emitted=%v", ran, emitted)
+		}
+	})
+
+	// Route to bedrock: a non-OpenAI provider never emits native, so no confirm.
+	t.Run("non-openai final route does not confirm", func(t *testing.T) {
+		h := twoProviderHandler(t)
+		var emitted, ran bool
+		h.SetGatewayHooks(&types.GatewayHooks{
+			PreRequest: func(in types.PreRequestInput) types.PreRequestDecision {
+				return types.PreRequestDecision{Verdict: types.VerdictRoute, RoutedModelOverride: "claude-strong"}
+			},
+			ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+				return &types.SchemaSettings{Mode: "provider_native", SchemaPolicyID: "sp-x", SchemaBody: body}
+			},
+			PostResponse: func(in types.PostResponseInput) { ran = true; emitted = in.SchemaNativeEmitted },
+		})
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"hi"}]}`))
+		h.ChatCompletion(w, r)
+		h.DrainPostResponse()
+		if !ran {
+			t.Fatal("post-response must run")
+		}
+		if emitted {
+			t.Fatal("non-openai route must NOT confirm native emission")
+		}
+	})
 }

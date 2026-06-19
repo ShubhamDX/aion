@@ -290,6 +290,12 @@ type PostResponseInput struct {
 	// body, the same trust level as PreRequestInput.Request. The proxy never logs
 	// or stores it.
 	ResponseContents []string
+	// SchemaNativeEmitted is the wire truth: true ONLY when the provider actually
+	// emitted native structured output (OpenAI response_format.json_schema) on the
+	// dispatched request. An embedding product gates its evidence on this so it
+	// cannot claim provider_native when the resolver selected it but the wire path
+	// did not emit it. false on streaming and on every non-OpenAI path.
+	SchemaNativeEmitted bool
 }
 
 // PreRequestInput.RequestDigest mirror: the pre-request hook also needs the

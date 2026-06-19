@@ -36,12 +36,12 @@ type ChatCompletionRequest struct {
 // response-format / tool-schema / envelope payload. It is an in-memory carrier
 // (request field is `json:"-"`) and must never be serialized to a provider.
 //
-// SP2b-2 populates and carries it; no provider activates on it. A later slice
-// (SP2b-3+) reads Mode to build a provider-native payload, gated behind a
-// per-provider golden test.
+// SP2b-2 populated and carried it; SP2b-3b is the first slice where a provider
+// (OpenAI-compatible only) reads Mode + SchemaBody to emit native structured
+// output, gated behind golden tests.
 type SchemaSettings struct {
 	// Mode is the resolved provider schema mode (validation_only, provider_native,
-	// tool_schema, prompt_envelope, none). In SP2b-2 observe traffic this is
+	// tool_schema, prompt_envelope, none). In observe traffic this is
 	// validation_only.
 	Mode string
 	// SchemaPolicyID / SchemaVersion / SchemaHash are schema IDENTITY only (the
@@ -50,12 +50,18 @@ type SchemaSettings struct {
 	SchemaVersion  string
 	SchemaHash     string
 	// FailClosed records that a mandatory enforcement could not be honored by the
-	// resolved provider path. SP2b-2 only CARRIES this fact; it does not block
-	// traffic. Acting on it is a later SP2b slice.
+	// resolved provider path. The gateway acts on it before dispatch for the
+	// OpenAI-native scope (SP2b-3b); other scopes still only carry it.
 	FailClosed bool
 	// Reason is the non-sensitive resolver reason label (for logs / later
 	// evidence). No prompt/response/schema content.
 	Reason string
+	// SchemaBody is the raw JSON Schema the embedding product wants emitted as
+	// OpenAI native structured output. It is carried IN MEMORY only (the request
+	// field is json:"-"), read solely by the OpenAI-compatible provider path when
+	// Mode==provider_native, and MUST NEVER be persisted, logged or signed (AION
+	// signs only SchemaHash). nil when no native emission applies.
+	SchemaBody *JSONSchemaSpec
 }
 
 // Message represents a single message in a chat conversation.
@@ -129,7 +135,28 @@ type FunctionDef struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// ResponseFormat specifies the desired response format.
+// ResponseFormat specifies the desired response format. Type is the OpenAI
+// response_format type ("text", "json_object", "json_schema"). JSONSchema is set
+// only for Type=="json_schema" (OpenAI native structured output); it is omitted
+// otherwise so an unchanged request marshals exactly as before.
 type ResponseFormat struct {
-	Type string `json:"type"`
+	Type       string          `json:"type"`
+	JSONSchema *JSONSchemaSpec `json:"json_schema,omitempty"`
 }
+
+// JSONSchemaSpec is the OpenAI response_format.json_schema payload: a name, a
+// strict flag, and the JSON Schema itself. Schema is the raw schema body; it
+// rides only on the in-memory request (never persisted or signed by AION).
+type JSONSchemaSpec struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+// ProviderSchemaMode values the provider path compares against. These mirror the
+// embedding product's mode strings; only the ones the OSS provider path needs are
+// declared here (it activates native output on provider_native only).
+const (
+	ProviderSchemaModeValidationOnly = "validation_only"
+	ProviderSchemaModeProviderNative = "provider_native"
+)

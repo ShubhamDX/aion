@@ -13,3 +13,9 @@ type Tool = pkgtypes.Tool
 type FunctionDef = pkgtypes.FunctionDef
 type ResponseFormat = pkgtypes.ResponseFormat
 type SchemaSettings = pkgtypes.SchemaSettings
+type JSONSchemaSpec = pkgtypes.JSONSchemaSpec
+
+const (
+	ProviderSchemaModeValidationOnly = pkgtypes.ProviderSchemaModeValidationOnly
+	ProviderSchemaModeProviderNative = pkgtypes.ProviderSchemaModeProviderNative
+)
