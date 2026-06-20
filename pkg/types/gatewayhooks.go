@@ -149,6 +149,27 @@ type GatewayHooks struct {
 	// (not installed) leaves whatever PreRequest set untouched. No provider reads
 	// the carrier yet, so this cannot change a served response or upstream payload.
 	ResolveSchemaSettings func(PostRouteInput) *SchemaSettings
+	// ApplyContextCompression is an optional post-route, pre-dispatch seam. The
+	// proxy calls it AFTER routing, schema resolution and budget, but BEFORE
+	// dispatch, on the non-streaming path only. The embedding product may return a
+	// replacement message set (a deterministically compressed view of the request
+	// it already computed from the ORIGINAL intent); the proxy swaps req.Messages
+	// for the returned slice before building the upstream payload. Returning a nil
+	// result (or a nil hook) leaves the request unchanged. Routing already happened
+	// on the original request, so compression cannot change the routed model. The
+	// embedding product owns the no-raw-evidence discipline; the proxy never logs
+	// or persists the messages.
+	ApplyContextCompression func(PostRouteInput) *ContextCompressionResult
+}
+
+// ContextCompressionResult is the optional replacement the ApplyContextCompression
+// seam returns. Messages, when non-nil, replaces req.Messages before dispatch.
+// Applied is the embedding product's own record that the swap happened (the proxy
+// applies the swap iff Messages is non-nil; Applied is informational for the
+// caller's evidence). A nil result or nil Messages means no change.
+type ContextCompressionResult struct {
+	Messages []Message
+	Applied  bool
 }
 
 // PostRouteInput is the final-route view handed to ResolveSchemaSettings. The

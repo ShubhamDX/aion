@@ -284,3 +284,76 @@ func TestSchemaNativeEmitted_ConfirmationFlows(t *testing.T) {
 		}
 	})
 }
+
+// capturingProvider records the messages it was asked to dispatch, so a test can
+// assert whether the context-compression seam swapped them.
+type capturingProvider struct {
+	name string
+	got  *[]types.Message
+}
+
+func (p capturingProvider) Name() string { return p.name }
+func (p capturingProvider) Send(_ context.Context, req *types.ChatCompletionRequest, _ string) (*provider.Response, error) {
+	*p.got = req.Messages
+	return &provider.Response{
+		StatusCode: http.StatusOK,
+		ChatResponse: &types.ChatCompletionResponse{
+			Choices: []types.Choice{{Message: types.Message{Role: "assistant", Content: json.RawMessage(`"ok"`)}, FinishReason: "stop"}},
+			Usage:   types.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+	}, nil
+}
+func (p capturingProvider) SendStream(context.Context, *types.ChatCompletionRequest, string) (provider.StreamReader, error) {
+	return nil, nil
+}
+
+func captureHandler(t *testing.T, got *[]types.Message) *Handler {
+	t.Helper()
+	cfg := &config.Config{}
+	cfg.Providers.OpenAI = &config.ProviderConfig{
+		Models: []config.ModelConfig{{ID: "gpt-cheap", Tier: 1, InputPricePer1M: 1, OutputPricePer1M: 2}},
+	}
+	reg := provider.NewRegistry()
+	reg.Register(capturingProvider{name: "openai", got: got})
+	return &Handler{router: router.NewRouter(cfg, nil), registry: reg, pricing: pricing.NewTable(cfg.Providers)}
+}
+
+// CP4 seam: a returned message set replaces req.Messages before dispatch.
+func TestApplyContextCompression_SwapsDispatchedMessages(t *testing.T) {
+	var dispatched []types.Message
+	h := captureHandler(t, &dispatched)
+	compressed := []types.Message{{Role: "user", Content: json.RawMessage(`"compressed"`)}}
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ApplyContextCompression: func(in types.PostRouteInput) *types.ContextCompressionResult {
+			return &types.ContextCompressionResult{Messages: compressed, Applied: true}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"original long body"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if len(dispatched) != 1 || dispatched[0].ContentString() != "compressed" {
+		t.Fatalf("dispatched messages must be the compressed set, got %+v", dispatched)
+	}
+}
+
+// A nil result leaves the request unchanged.
+func TestApplyContextCompression_NilResultLeavesOriginal(t *testing.T) {
+	var dispatched []types.Message
+	h := captureHandler(t, &dispatched)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ApplyContextCompression: func(in types.PostRouteInput) *types.ContextCompressionResult {
+			return nil
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"original body"}]}`))
+	h.ChatCompletion(w, r)
+	if len(dispatched) != 1 || dispatched[0].ContentString() != "original body" {
+		t.Fatalf("nil result must leave the original messages, got %+v", dispatched)
+	}
+}

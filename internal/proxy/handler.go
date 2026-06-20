@@ -260,6 +260,25 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 5c. Context-compression seam (CP4): non-stream only, after routing + schema +
+	// budget, before dispatch. The embedding product returns a deterministically
+	// compressed message set (computed from the ORIGINAL intent); the proxy swaps
+	// req.Messages just before building the upstream payload. Routing already used
+	// the original request, so this cannot change the routed model.
+	if h.hooks != nil && h.hooks.ApplyContextCompression != nil {
+		if res := h.hooks.ApplyContextCompression(types.PostRouteInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: model,
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			RequestDigest:  types.RequestContentDigest(&req),
+		}); res != nil && res.Messages != nil {
+			req.Messages = res.Messages
+		}
+	}
+
 	// Non-streaming path.
 	resp, err := prov.Send(ctx, &req, selectedModel.ID)
 	if err != nil {

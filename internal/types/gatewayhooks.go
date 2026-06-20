@@ -12,6 +12,7 @@ type PreRequestDecision = pkgtypes.PreRequestDecision
 type PreRequestVerdict = pkgtypes.PreRequestVerdict
 type PostResponseInput = pkgtypes.PostResponseInput
 type PostRouteInput = pkgtypes.PostRouteInput
+type ContextCompressionResult = pkgtypes.ContextCompressionResult
 type SessionMaterial = pkgtypes.SessionMaterial
 type SessionSource = pkgtypes.SessionSource
 
