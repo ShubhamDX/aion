@@ -536,6 +536,23 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 6c. Context-compression seam (CP4): non-stream only, after routing + schema,
+	// before dispatch. Same contract as the OpenAI ingress. Routing already used
+	// the original request, so this cannot change the routed model.
+	if h.hooks != nil && h.hooks.ApplyContextCompression != nil {
+		if res := h.hooks.ApplyContextCompression(types.PostRouteInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestedModel: model,
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			RequestDigest:  types.RequestContentDigest(req),
+		}); res != nil && res.Messages != nil {
+			req.Messages = res.Messages
+		}
+	}
+
 	// Non-streaming path.
 	resp, err := prov.Send(ctx, req, selectedModel.ID)
 	if err != nil {
