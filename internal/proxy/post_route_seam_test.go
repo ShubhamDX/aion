@@ -357,3 +357,26 @@ func TestApplyContextCompression_NilResultLeavesOriginal(t *testing.T) {
 		t.Fatalf("nil result must leave the original messages, got %+v", dispatched)
 	}
 }
+
+// CP4 parity: the Anthropic non-stream ingress also applies the context
+// compression seam (swaps dispatched messages).
+func TestApplyContextCompression_AnthropicIngress(t *testing.T) {
+	var dispatched []types.Message
+	h := captureHandler(t, &dispatched)
+	compressed := []types.Message{{Role: "user", Content: json.RawMessage(`"compressed"`)}}
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ApplyContextCompression: func(in types.PostRouteInput) *types.ContextCompressionResult {
+			return &types.ContextCompressionResult{Messages: compressed, Applied: true}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"gpt-cheap","max_tokens":16,"messages":[{"role":"user","content":"original anthropic body"}]}`))
+	h.AnthropicMessages(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	if len(dispatched) != 1 || dispatched[0].ContentString() != "compressed" {
+		t.Fatalf("anthropic ingress must apply the compression seam, got %+v", dispatched)
+	}
+}
