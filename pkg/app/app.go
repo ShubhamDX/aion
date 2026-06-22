@@ -46,9 +46,16 @@ type Options struct {
 	// ExtraRoutes, if set, is called with the gateway mux after the built-in
 	// routes are registered and before the middleware chain wraps it, so an
 	// embedding product can mount additional handlers (e.g. a license-status
-	// probe or an approval-queue API). Routes under /healthz/ bypass auth. nil
-	// leaves OSS behavior unchanged.
+	// probe or an approval-queue API). Routes under /healthz/ bypass auth.
+	// ExtraAuthBypassPrefixes can opt extra mounted route prefixes out of API-key
+	// auth so the embedding product can install its own auth. nil leaves OSS
+	// behavior unchanged.
 	ExtraRoutes func(mux *http.ServeMux)
+
+	// ExtraAuthBypassPrefixes are route prefixes mounted by ExtraRoutes that
+	// should bypass OSS API-key auth. Use only when the embedding product wraps
+	// that prefix in its own auth layer. Empty by default.
+	ExtraAuthBypassPrefixes []string
 }
 
 // App encapsulates the full AION gateway runtime.
@@ -198,7 +205,9 @@ func Build(opts Options) (*App, error) {
 		server.RequestIDMiddleware,
 		server.LoggingMiddleware,
 		server.CORSMiddleware,
-		server.AuthMiddleware(validator),
+		server.AuthMiddlewareWithOptions(validator, server.AuthOptions{
+			ExtraBypassPrefixes: opts.ExtraAuthBypassPrefixes,
+		}),
 	)
 
 	// Parse timeouts.
