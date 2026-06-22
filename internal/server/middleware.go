@@ -136,6 +136,21 @@ func PanicRecoveryMiddleware(next http.Handler) http.Handler {
 // given validator. If validator is nil, authentication is skipped and all
 // requests are allowed through.
 func AuthMiddleware(validator *apikey.Validator) func(http.Handler) http.Handler {
+	return AuthMiddlewareWithOptions(validator, AuthOptions{})
+}
+
+// AuthOptions configures API-key auth bypasses for embedding products.
+type AuthOptions struct {
+	// ExtraBypassPrefixes are route prefixes that bypass OSS API-key auth.
+	// Callers must install their own auth on these routes.
+	ExtraBypassPrefixes []string
+}
+
+// AuthMiddlewareWithOptions validates API keys and allows a narrow set of
+// explicit auth-bypass prefixes for embedding products that install their own
+// route-level auth.
+func AuthMiddlewareWithOptions(validator *apikey.Validator, opts AuthOptions) func(http.Handler) http.Handler {
+	extraBypassPrefixes := sanitizeBypassPrefixes(opts.ExtraBypassPrefixes)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if validator == nil {
@@ -148,6 +163,10 @@ func AuthMiddleware(validator *apikey.Validator) func(http.Handler) http.Handler
 			// which expose no secrets and must be reachable by load balancers and
 			// operators without a key.
 			if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/healthz/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if bypassesAuth(r.URL.Path, extraBypassPrefixes) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -172,6 +191,42 @@ func AuthMiddleware(validator *apikey.Validator) func(http.Handler) http.Handler
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func sanitizeBypassPrefixes(prefixes []string) []string {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(prefixes))
+	seen := make(map[string]struct{}, len(prefixes))
+	for _, p := range prefixes {
+		p = strings.TrimSpace(p)
+		if p == "" || p == "/" {
+			continue
+		}
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		p = strings.TrimRight(p, "/")
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func bypassesAuth(path string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func writeAuthError(w http.ResponseWriter, message string) {
