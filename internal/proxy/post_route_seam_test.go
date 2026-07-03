@@ -288,13 +288,21 @@ func TestSchemaNativeEmitted_ConfirmationFlows(t *testing.T) {
 // capturingProvider records the messages it was asked to dispatch, so a test can
 // assert whether the context-compression seam swapped them.
 type capturingProvider struct {
-	name string
-	got  *[]types.Message
+	name   string
+	got    *[]types.Message
+	gotReq *types.ChatCompletionRequest
 }
 
 func (p capturingProvider) Name() string { return p.name }
 func (p capturingProvider) Send(_ context.Context, req *types.ChatCompletionRequest, _ string) (*provider.Response, error) {
-	*p.got = req.Messages
+	if p.got != nil {
+		*p.got = req.Messages
+	}
+	if p.gotReq != nil {
+		copied := *req
+		copied.Messages = append([]types.Message(nil), req.Messages...)
+		*p.gotReq = copied
+	}
 	return &provider.Response{
 		StatusCode: http.StatusOK,
 		ChatResponse: &types.ChatCompletionResponse{
@@ -309,12 +317,18 @@ func (p capturingProvider) SendStream(context.Context, *types.ChatCompletionRequ
 
 func captureHandler(t *testing.T, got *[]types.Message) *Handler {
 	t.Helper()
+	var req types.ChatCompletionRequest
+	return captureRequestHandler(t, got, &req)
+}
+
+func captureRequestHandler(t *testing.T, got *[]types.Message, gotReq *types.ChatCompletionRequest) *Handler {
+	t.Helper()
 	cfg := &config.Config{}
 	cfg.Providers.OpenAI = &config.ProviderConfig{
 		Models: []config.ModelConfig{{ID: "gpt-cheap", Tier: 1, InputPricePer1M: 1, OutputPricePer1M: 2}},
 	}
 	reg := provider.NewRegistry()
-	reg.Register(capturingProvider{name: "openai", got: got})
+	reg.Register(capturingProvider{name: "openai", got: got, gotReq: gotReq})
 	return &Handler{router: router.NewRouter(cfg, nil), registry: reg, pricing: pricing.NewTable(cfg.Providers)}
 }
 
@@ -378,5 +392,141 @@ func TestApplyContextCompression_AnthropicIngress(t *testing.T) {
 	}
 	if len(dispatched) != 1 || dispatched[0].ContentString() != "compressed" {
 		t.Fatalf("anthropic ingress must apply the compression seam, got %+v", dispatched)
+	}
+}
+
+func TestApplyOutputControl_NilHookLeavesRequestUnchanged(t *testing.T) {
+	var dispatched []types.Message
+	var dispatchedReq types.ChatCompletionRequest
+	h := captureRequestHandler(t, &dispatched, &dispatchedReq)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","max_tokens":128,"messages":[{"role":"user","content":"original body"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if len(dispatched) != 1 || dispatched[0].ContentString() != "original body" {
+		t.Fatalf("nil hook must leave messages unchanged, got %+v", dispatched)
+	}
+	if dispatchedReq.MaxTokens == nil || *dispatchedReq.MaxTokens != 128 {
+		t.Fatalf("nil hook must leave max_tokens unchanged, got %+v", dispatchedReq.MaxTokens)
+	}
+}
+
+func TestApplyOutputControl_NilResultLeavesRequestUnchanged(t *testing.T) {
+	var dispatched []types.Message
+	var dispatchedReq types.ChatCompletionRequest
+	h := captureRequestHandler(t, &dispatched, &dispatchedReq)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ApplyOutputControl: func(in types.OutputControlInput) *types.OutputControlResult {
+			if in.Request == nil || len(in.Request.Messages) != 1 || in.Request.Messages[0].ContentString() != "original body" {
+				t.Fatalf("output seam saw wrong request: %+v", in.Request)
+			}
+			return nil
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","max_tokens":128,"messages":[{"role":"user","content":"original body"}]}`))
+	h.ChatCompletion(w, r)
+	if len(dispatched) != 1 || dispatched[0].ContentString() != "original body" {
+		t.Fatalf("nil result must leave messages unchanged, got %+v", dispatched)
+	}
+	if dispatchedReq.MaxTokens == nil || *dispatchedReq.MaxTokens != 128 {
+		t.Fatalf("nil result must leave max_tokens unchanged, got %+v", dispatchedReq.MaxTokens)
+	}
+}
+
+func TestApplyOutputControl_SwapsMessagesAndMaxTokens(t *testing.T) {
+	var dispatched []types.Message
+	var dispatchedReq types.ChatCompletionRequest
+	h := captureRequestHandler(t, &dispatched, &dispatchedReq)
+	finalCap := 64
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ApplyOutputControl: func(in types.OutputControlInput) *types.OutputControlResult {
+			if in.RoutedProvider != "openai" || in.RoutedModel != "gpt-cheap" {
+				t.Fatalf("output seam must see final route, got %q/%q", in.RoutedProvider, in.RoutedModel)
+			}
+			return &types.OutputControlResult{
+				Messages:  []types.Message{{Role: "system", Content: json.RawMessage(`"style envelope"`)}, {Role: "user", Content: json.RawMessage(`"final body"`)}},
+				MaxTokens: &finalCap,
+				Applied:   true,
+			}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","max_tokens":128,"messages":[{"role":"user","content":"original body"}]}`))
+	h.ChatCompletion(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if len(dispatched) != 2 || dispatched[0].ContentString() != "style envelope" || dispatched[1].ContentString() != "final body" {
+		t.Fatalf("output seam must replace dispatched messages, got %+v", dispatched)
+	}
+	if dispatchedReq.MaxTokens == nil || *dispatchedReq.MaxTokens != 64 {
+		t.Fatalf("output seam must replace max_tokens, got %+v", dispatchedReq.MaxTokens)
+	}
+}
+
+func TestApplyOutputControl_RunsAfterContextCompression(t *testing.T) {
+	var dispatched []types.Message
+	h := captureHandler(t, &dispatched)
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ApplyContextCompression: func(in types.PostRouteInput) *types.ContextCompressionResult {
+			return &types.ContextCompressionResult{
+				Messages: []types.Message{{Role: "user", Content: json.RawMessage(`"compressed"`)}},
+				Applied:  true,
+			}
+		},
+		ApplyOutputControl: func(in types.OutputControlInput) *types.OutputControlResult {
+			if in.Request == nil || len(in.Request.Messages) != 1 || in.Request.Messages[0].ContentString() != "compressed" {
+				t.Fatalf("output seam must see the post-compression request, got %+v", in.Request)
+			}
+			return &types.OutputControlResult{
+				Messages: []types.Message{{Role: "user", Content: json.RawMessage(`"output controlled"`)}},
+				Applied:  true,
+			}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-cheap","messages":[{"role":"user","content":"original body"}]}`))
+	h.ChatCompletion(w, r)
+	if len(dispatched) != 1 || dispatched[0].ContentString() != "output controlled" {
+		t.Fatalf("output seam must run after compression and before dispatch, got %+v", dispatched)
+	}
+}
+
+func TestApplyOutputControl_AnthropicIngress(t *testing.T) {
+	var dispatched []types.Message
+	var dispatchedReq types.ChatCompletionRequest
+	h := captureRequestHandler(t, &dispatched, &dispatchedReq)
+	finalCap := 32
+	h.SetGatewayHooks(&types.GatewayHooks{
+		ApplyOutputControl: func(in types.OutputControlInput) *types.OutputControlResult {
+			if in.RequestedModel != "gpt-cheap" || in.RoutedProvider != "openai" || in.RoutedModel != "gpt-cheap" {
+				t.Fatalf("output seam saw wrong route: %+v", in.PostRouteInput)
+			}
+			return &types.OutputControlResult{
+				Messages:  []types.Message{{Role: "user", Content: json.RawMessage(`"anthropic output controlled"`)}},
+				MaxTokens: &finalCap,
+				Applied:   true,
+			}
+		},
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"gpt-cheap","max_tokens":128,"messages":[{"role":"user","content":"original anthropic body"}]}`))
+	h.AnthropicMessages(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	if len(dispatched) != 1 || dispatched[0].ContentString() != "anthropic output controlled" {
+		t.Fatalf("anthropic ingress must apply output control, got %+v", dispatched)
+	}
+	if dispatchedReq.MaxTokens == nil || *dispatchedReq.MaxTokens != 32 {
+		t.Fatalf("anthropic ingress must apply output max_tokens, got %+v", dispatchedReq.MaxTokens)
 	}
 }

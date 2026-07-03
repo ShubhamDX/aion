@@ -160,6 +160,14 @@ type GatewayHooks struct {
 	// embedding product owns the no-raw-evidence discipline; the proxy never logs
 	// or persists the messages.
 	ApplyContextCompression func(PostRouteInput) *ContextCompressionResult
+	// ApplyOutputControl is an optional post-context, pre-dispatch seam. The proxy
+	// calls it AFTER context compression, schema resolution and budget, but BEFORE
+	// dispatch, on the non-streaming path only. The embedding product receives the
+	// current in-memory request shape and may return a final message set and/or a
+	// final max_tokens cap. Returning nil or a result with no fields set leaves
+	// the request unchanged. The hook is for output-token controls such as a fixed
+	// style envelope; the proxy never logs or persists the request body.
+	ApplyOutputControl func(OutputControlInput) *OutputControlResult
 }
 
 // ContextCompressionResult is the optional replacement the ApplyContextCompression
@@ -170,6 +178,26 @@ type GatewayHooks struct {
 type ContextCompressionResult struct {
 	Messages []Message
 	Applied  bool
+}
+
+// OutputControlInput is the final-route, post-context view handed to
+// ApplyOutputControl. Request is the current parsed request just before provider
+// dispatch. It may already include context compression. RequestDigest binds that
+// current request shape before output control applies.
+type OutputControlInput struct {
+	PostRouteInput
+	Request *ChatCompletionRequest
+}
+
+// OutputControlResult is the optional replacement the ApplyOutputControl seam
+// returns. Messages, when non-nil, replaces req.Messages before dispatch.
+// MaxTokens, when non-nil, replaces req.MaxTokens before dispatch. Applied is
+// informational for the embedding product's evidence; the proxy applies each
+// non-nil field regardless of Applied.
+type OutputControlResult struct {
+	Messages  []Message
+	MaxTokens *int
+	Applied   bool
 }
 
 // PostRouteInput is the final-route view handed to ResolveSchemaSettings. The
