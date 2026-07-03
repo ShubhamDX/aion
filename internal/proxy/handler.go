@@ -279,6 +279,10 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 5d. Output-control seam (OP3b): non-stream only, after context compression
+	// and before dispatch. Nil hook or nil result leaves the request unchanged.
+	h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier)
+
 	// Non-streaming path.
 	resp, err := prov.Send(ctx, &req, selectedModel.ID)
 	if err != nil {
