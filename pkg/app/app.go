@@ -176,6 +176,7 @@ func Build(opts Options) (*App, error) {
 	// Build route handlers.
 	handlers := server.RouteHandlers{
 		ChatCompletion:    proxyHandler.ChatCompletion,
+		Responses:         proxyHandler.Responses,
 		AnthropicMessages: proxyHandler.AnthropicMessages,
 		ListModels:        listModelsHandler(cfg),
 		Health:            healthHandler(),
