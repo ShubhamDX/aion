@@ -8,6 +8,7 @@ import (
 // RouteHandlers holds the handler functions for each endpoint.
 type RouteHandlers struct {
 	ChatCompletion    http.HandlerFunc // POST /v1/chat/completions
+	Responses         http.HandlerFunc // POST /v1/responses
 	AnthropicMessages http.HandlerFunc // POST /v1/messages
 	ListModels        http.HandlerFunc // GET /v1/models
 	Health            http.HandlerFunc // GET /health
@@ -21,6 +22,7 @@ type RouteHandlers struct {
 func NewRouter(handlers RouteHandlers) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", handlers.ChatCompletion)
+	mux.HandleFunc("POST /v1/responses", handlers.Responses)
 	mux.HandleFunc("POST /v1/messages", handlers.AnthropicMessages)
 	mux.HandleFunc("POST /v1/messages/count_tokens", countTokensStub)
 	mux.HandleFunc("GET /v1/models", handlers.ListModels)
