@@ -2,14 +2,14 @@
 
 # AION
 
-**Deterministic LLM routing. Pay the tier that fits the task — not the tier you forgot to downgrade.**
+**Deterministic LLM routing. Pay the tier that fits the task, not the tier you forgot to downgrade.**
 
 [![Go Version](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-shubhamdx%2Faion-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/shubhamdx/aion)
 [![Classifier](https://img.shields.io/badge/classify-%3C1ms-brightgreen)]()
 
-A single Go binary that sits in front of your LLM providers, scores each request in **<1ms**, and dispatches it to the cheapest model that can actually handle it. No GPU. No external calls. No code changes — point your OpenAI or Anthropic SDK at `http://localhost:8080` and go.
+A single Go binary that sits in front of your LLM providers, scores each request in **<1ms** and dispatches it to the lowest configured tier that matches the task. No GPU. No external calls. No code changes. Point your OpenAI or Anthropic SDK at `http://localhost:8080` and go.
 
 </div>
 
@@ -17,18 +17,18 @@ A single Go binary that sits in front of your LLM providers, scores each request
 
 ## Why
 
-Most agentic tools default to the strongest model for **every** turn. In a 200-step autonomous coding session, 70–85% of those turns are mechanically trivial: file reads, lint fixes, one-line edits, "run the tests." Routing all of them to Opus or o1 is structural overspend.
+Most agentic tools default to the strongest model for **every** turn. Real agent sessions contain a mix of task shapes: quick checks, file reads, small edits, debugging and larger design work. Routing all of them to the same premium model is structural overspend.
 
 AION makes model selection proportional to actual task complexity.
 
 ```
-"hello"                              ─►  Tier 1 · Haiku    · $0.000003
-"fix this typo"                      ─►  Tier 1 · gpt-4o-mini · $0.000006
-"add a null check on line 42"        ─►  Tier 2 · Sonnet    · $0.000182
-"refactor this package to use X"     ─►  Tier 3 · Opus      · $0.004210
+"hello"                              ->  Tier 1  simple
+"fix this typo"                      ->  Tier 1  simple
+"add a null check on line 42"        ->  Tier 2  moderate
+"refactor this package to use X"     ->  Tier 3  complex
 ```
 
-Same quality. Smaller bill.
+AION records routing, cost and model decisions so teams can measure savings against their own traffic instead of relying on generic claims.
 
 > AION is **not** OpenRouter or LiteLLM. Those forward requests to whichever model you specify. AION **decides** which model to use: you send `model: "aion-auto"`, the classifier picks the tier.
 
@@ -39,7 +39,7 @@ Same quality. Smaller bill.
 - [Quick Start](#quick-start)
 - [Usage](#usage)
 - [How It Works](#how-it-works)
-- [Local Inference](#local-inference) — $0 Tier 1 via llama.cpp
+- [Local Inference](#local-inference): $0 Tier 1 via llama.cpp
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
 - [Docker](#docker)
@@ -68,7 +68,7 @@ Same quality. Smaller bill.
 | `POST /v1/chat/completions` | OpenAI | OpenAI SDK · LangChain · any OpenAI client |
 | `POST /v1/messages` | Anthropic | Anthropic SDK · **Claude Code** · any Anthropic client |
 
-Both pipelines converge on the same core: **classify → route → budget-check → dispatch → telemetry.**
+Both pipelines converge on the same core: **classify -> route -> budget-check -> dispatch -> telemetry.**
 
 ---
 
