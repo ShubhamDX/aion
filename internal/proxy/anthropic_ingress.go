@@ -650,6 +650,98 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 // ---------- streaming ----------
 
+type anthropicSSEState struct {
+	blockIndex    int
+	blockOpen     bool
+	openToolIndex *int
+	openToolID    string
+	fallbackIndex int
+}
+
+func (s *anthropicSSEState) closeBlock(w http.ResponseWriter, flusher http.Flusher) {
+	if !s.blockOpen {
+		return
+	}
+	writeSSEEvent(w, flusher, "content_block_stop", map[string]interface{}{
+		"type":  "content_block_stop",
+		"index": s.blockIndex,
+	})
+	s.blockIndex++
+	s.blockOpen = false
+	s.openToolIndex = nil
+	s.openToolID = ""
+}
+
+func (s *anthropicSSEState) writeChoice(w http.ResponseWriter, flusher http.Flusher, choice types.ChunkChoice) {
+	if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+		if !s.blockOpen || s.openToolIndex != nil {
+			s.closeBlock(w, flusher)
+			writeSSEEvent(w, flusher, "content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": s.blockIndex,
+				"content_block": map[string]interface{}{
+					"type": "text",
+					"text": "",
+				},
+			})
+			s.blockOpen = true
+		}
+		writeSSEEvent(w, flusher, "content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": s.blockIndex,
+			"delta": map[string]interface{}{
+				"type": "text_delta",
+				"text": *choice.Delta.Content,
+			},
+		})
+	}
+
+	for _, tc := range choice.Delta.ToolCalls {
+		toolIndex := s.fallbackIndex
+		if tc.Index != nil {
+			toolIndex = *tc.Index
+		} else if s.openToolIndex != nil {
+			toolIndex = *s.openToolIndex
+		}
+
+		newTool := s.openToolIndex == nil || *s.openToolIndex != toolIndex
+		if !newTool && tc.ID != "" && s.openToolID != "" && tc.ID != s.openToolID {
+			newTool = true
+		}
+		if newTool {
+			s.closeBlock(w, flusher)
+			idx := toolIndex
+			writeSSEEvent(w, flusher, "content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": s.blockIndex,
+				"content_block": map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Function.Name,
+					"input": map[string]interface{}{},
+				},
+			})
+			s.blockOpen = true
+			s.openToolIndex = &idx
+			s.openToolID = tc.ID
+			if tc.Index == nil {
+				s.fallbackIndex++
+			}
+		}
+
+		if tc.Function.Arguments != "" {
+			writeSSEEvent(w, flusher, "content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": s.blockIndex,
+				"delta": map[string]interface{}{
+					"type":         "input_json_delta",
+					"partial_json": tc.Function.Arguments,
+				},
+			})
+		}
+	}
+}
+
 // handleAnthropicStream reads OpenAI SSE chunks from a provider and emits
 // Anthropic-format SSE events to the client.
 func (h *Handler) handleAnthropicStream(
@@ -716,8 +808,7 @@ func (h *Handler) handleAnthropicStream(
 	writeSSEEvent(w, flusher, "message_start", msgStart)
 
 	// Track state for building Anthropic events from OpenAI chunks.
-	contentBlockStarted := false
-	blockIndex := 0
+	var sseState anthropicSSEState
 	var totalUsage types.Usage
 	var lastFinishReason string
 	streamComplete := false
@@ -744,88 +835,12 @@ func (h *Handler) handleAnthropicStream(
 				continue
 			}
 
-			// Content delta.
-			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-				if !contentBlockStarted {
-					// Emit content_block_start.
-					cbStart := map[string]interface{}{
-						"type":  "content_block_start",
-						"index": blockIndex,
-						"content_block": map[string]interface{}{
-							"type": "text",
-							"text": "",
-						},
-					}
-					writeSSEEvent(w, flusher, "content_block_start", cbStart)
-					contentBlockStarted = true
-				}
-
-				// Emit content_block_delta.
-				cbDelta := map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": blockIndex,
-					"delta": map[string]interface{}{
-						"type": "text_delta",
-						"text": *choice.Delta.Content,
-					},
-				}
-				writeSSEEvent(w, flusher, "content_block_delta", cbDelta)
-			}
-
-			// Emit tool call deltas as tool_use blocks.
-			for _, tc := range choice.Delta.ToolCalls {
-				if contentBlockStarted {
-					cbStop := map[string]interface{}{
-						"type":  "content_block_stop",
-						"index": blockIndex,
-					}
-					writeSSEEvent(w, flusher, "content_block_stop", cbStop)
-					blockIndex++
-					contentBlockStarted = false
-				}
-
-				cbStart := map[string]interface{}{
-					"type":  "content_block_start",
-					"index": blockIndex,
-					"content_block": map[string]interface{}{
-						"type":  "tool_use",
-						"id":    tc.ID,
-						"name":  tc.Function.Name,
-						"input": map[string]interface{}{},
-					},
-				}
-				writeSSEEvent(w, flusher, "content_block_start", cbStart)
-
-				if tc.Function.Arguments != "" {
-					cbDelta := map[string]interface{}{
-						"type":  "content_block_delta",
-						"index": blockIndex,
-						"delta": map[string]interface{}{
-							"type":         "input_json_delta",
-							"partial_json": tc.Function.Arguments,
-						},
-					}
-					writeSSEEvent(w, flusher, "content_block_delta", cbDelta)
-				}
-
-				cbStop := map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": blockIndex,
-				}
-				writeSSEEvent(w, flusher, "content_block_stop", cbStop)
-				blockIndex++
-			}
+			sseState.writeChoice(w, flusher, choice)
 		}
 	}
 
 	// Close any open content block.
-	if contentBlockStarted {
-		cbStop := map[string]interface{}{
-			"type":  "content_block_stop",
-			"index": blockIndex,
-		}
-		writeSSEEvent(w, flusher, "content_block_stop", cbStop)
-	}
+	sseState.closeBlock(w, flusher)
 
 	// Emit message_delta with stop_reason.
 	stopReason := mapOpenAIFinishReason(lastFinishReason)
