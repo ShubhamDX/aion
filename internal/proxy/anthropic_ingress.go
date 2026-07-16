@@ -488,15 +488,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// 4. Budget check.
-	if keyInfo != nil && h.budget != nil {
-		if err := h.budget.Check(ctx, keyInfo.Key, keyInfo.DailyLimitUSD, keyInfo.MonthlyLimitUSD); err != nil {
-			writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
-			return
-		}
-	}
-
-	// 5. Resolve provider.
+	// 4. Resolve provider.
 	prov, ok := h.registry.Get(selectedModel.Provider)
 	if !ok {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error",
@@ -530,9 +522,14 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Dispatch — streaming or non-streaming.
+	// 7. Dispatch: streaming or non-streaming.
 	if req.Stream {
-		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)
+		reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
+		if err != nil {
+			writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
+			return
+		}
+		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial, reservationDate, reservedCost)
 		return
 	}
 
@@ -557,9 +554,16 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// and before dispatch. Nil hook or nil result leaves the request unchanged.
 	h.applyOutputControl(req, requestID, keyInfo, model, selectedModel, tier)
 
+	reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
+	if err != nil {
+		writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
+		return
+	}
+
 	// Non-streaming path.
 	resp, err := prov.Send(ctx, req, selectedModel.ID)
 	if err != nil {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		slog.Error("provider error",
 			"provider", selectedModel.Provider,
 			"model", selectedModel.ID,
@@ -600,10 +604,11 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Record budget spend.
-	if keyInfo != nil && h.budget != nil && costUSD > 0 {
-		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	settledCost := reservedCost
+	if resp.ChatResponse != nil && resp.ChatResponse.Usage.TotalTokens > 0 {
+		settledCost = costUSD
 	}
+	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
 	// Write response FIRST (same ordering as the OpenAI path): the customer
 	// response is fully served before the post-response hook runs, so the hook's
@@ -645,6 +650,98 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 // ---------- streaming ----------
 
+type anthropicSSEState struct {
+	blockIndex    int
+	blockOpen     bool
+	openToolIndex *int
+	openToolID    string
+	fallbackIndex int
+}
+
+func (s *anthropicSSEState) closeBlock(w http.ResponseWriter, flusher http.Flusher) {
+	if !s.blockOpen {
+		return
+	}
+	writeSSEEvent(w, flusher, "content_block_stop", map[string]interface{}{
+		"type":  "content_block_stop",
+		"index": s.blockIndex,
+	})
+	s.blockIndex++
+	s.blockOpen = false
+	s.openToolIndex = nil
+	s.openToolID = ""
+}
+
+func (s *anthropicSSEState) writeChoice(w http.ResponseWriter, flusher http.Flusher, choice types.ChunkChoice) {
+	if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+		if !s.blockOpen || s.openToolIndex != nil {
+			s.closeBlock(w, flusher)
+			writeSSEEvent(w, flusher, "content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": s.blockIndex,
+				"content_block": map[string]interface{}{
+					"type": "text",
+					"text": "",
+				},
+			})
+			s.blockOpen = true
+		}
+		writeSSEEvent(w, flusher, "content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": s.blockIndex,
+			"delta": map[string]interface{}{
+				"type": "text_delta",
+				"text": *choice.Delta.Content,
+			},
+		})
+	}
+
+	for _, tc := range choice.Delta.ToolCalls {
+		toolIndex := s.fallbackIndex
+		if tc.Index != nil {
+			toolIndex = *tc.Index
+		} else if s.openToolIndex != nil {
+			toolIndex = *s.openToolIndex
+		}
+
+		newTool := s.openToolIndex == nil || *s.openToolIndex != toolIndex
+		if !newTool && tc.ID != "" && s.openToolID != "" && tc.ID != s.openToolID {
+			newTool = true
+		}
+		if newTool {
+			s.closeBlock(w, flusher)
+			idx := toolIndex
+			writeSSEEvent(w, flusher, "content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": s.blockIndex,
+				"content_block": map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Function.Name,
+					"input": map[string]interface{}{},
+				},
+			})
+			s.blockOpen = true
+			s.openToolIndex = &idx
+			s.openToolID = tc.ID
+			if tc.Index == nil {
+				s.fallbackIndex++
+			}
+		}
+
+		if tc.Function.Arguments != "" {
+			writeSSEEvent(w, flusher, "content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": s.blockIndex,
+				"delta": map[string]interface{}{
+					"type":         "input_json_delta",
+					"partial_json": tc.Function.Arguments,
+				},
+			})
+		}
+	}
+}
+
 // handleAnthropicStream reads OpenAI SSE chunks from a provider and emits
 // Anthropic-format SSE events to the client.
 func (h *Handler) handleAnthropicStream(
@@ -660,11 +757,14 @@ func (h *Handler) handleAnthropicStream(
 	requestID string,
 	start time.Time,
 	sessionMaterial types.SessionMaterial,
+	reservationDate string,
+	reservedCost float64,
 ) {
 	ctx := r.Context()
 
 	stream, err := prov.SendStream(ctx, req, model.ID)
 	if err != nil {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		slog.Error("stream error",
 			"provider", model.Provider,
 			"model", model.ID,
@@ -678,6 +778,7 @@ func (h *Handler) handleAnthropicStream(
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error",
 			"Streaming not supported")
 		return
@@ -707,15 +808,16 @@ func (h *Handler) handleAnthropicStream(
 	writeSSEEvent(w, flusher, "message_start", msgStart)
 
 	// Track state for building Anthropic events from OpenAI chunks.
-	contentBlockStarted := false
-	blockIndex := 0
+	var sseState anthropicSSEState
 	var totalUsage types.Usage
 	var lastFinishReason string
+	streamComplete := false
 
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
 			if err == io.EOF {
+				streamComplete = true
 				break
 			}
 			slog.Error("stream read error", "error", err)
@@ -733,88 +835,12 @@ func (h *Handler) handleAnthropicStream(
 				continue
 			}
 
-			// Content delta.
-			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-				if !contentBlockStarted {
-					// Emit content_block_start.
-					cbStart := map[string]interface{}{
-						"type":  "content_block_start",
-						"index": blockIndex,
-						"content_block": map[string]interface{}{
-							"type": "text",
-							"text": "",
-						},
-					}
-					writeSSEEvent(w, flusher, "content_block_start", cbStart)
-					contentBlockStarted = true
-				}
-
-				// Emit content_block_delta.
-				cbDelta := map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": blockIndex,
-					"delta": map[string]interface{}{
-						"type": "text_delta",
-						"text": *choice.Delta.Content,
-					},
-				}
-				writeSSEEvent(w, flusher, "content_block_delta", cbDelta)
-			}
-
-			// Tool call deltas — emit as tool_use blocks.
-			for _, tc := range choice.Delta.ToolCalls {
-				if contentBlockStarted {
-					cbStop := map[string]interface{}{
-						"type":  "content_block_stop",
-						"index": blockIndex,
-					}
-					writeSSEEvent(w, flusher, "content_block_stop", cbStop)
-					blockIndex++
-					contentBlockStarted = false
-				}
-
-				cbStart := map[string]interface{}{
-					"type":  "content_block_start",
-					"index": blockIndex,
-					"content_block": map[string]interface{}{
-						"type":  "tool_use",
-						"id":    tc.ID,
-						"name":  tc.Function.Name,
-						"input": map[string]interface{}{},
-					},
-				}
-				writeSSEEvent(w, flusher, "content_block_start", cbStart)
-
-				if tc.Function.Arguments != "" {
-					cbDelta := map[string]interface{}{
-						"type":  "content_block_delta",
-						"index": blockIndex,
-						"delta": map[string]interface{}{
-							"type":         "input_json_delta",
-							"partial_json": tc.Function.Arguments,
-						},
-					}
-					writeSSEEvent(w, flusher, "content_block_delta", cbDelta)
-				}
-
-				cbStop := map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": blockIndex,
-				}
-				writeSSEEvent(w, flusher, "content_block_stop", cbStop)
-				blockIndex++
-			}
+			sseState.writeChoice(w, flusher, choice)
 		}
 	}
 
 	// Close any open content block.
-	if contentBlockStarted {
-		cbStop := map[string]interface{}{
-			"type":  "content_block_stop",
-			"index": blockIndex,
-		}
-		writeSSEEvent(w, flusher, "content_block_stop", cbStop)
-	}
+	sseState.closeBlock(w, flusher)
 
 	// Emit message_delta with stop_reason.
 	stopReason := mapOpenAIFinishReason(lastFinishReason)
@@ -863,10 +889,11 @@ func (h *Handler) handleAnthropicStream(
 		})
 	}
 
-	// Record budget spend.
-	if keyInfo != nil && h.budget != nil && costUSD > 0 {
-		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	settledCost := reservedCost
+	if streamComplete && totalUsage.TotalTokens > 0 {
+		settledCost = costUSD
 	}
+	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
 	// Gateway post-response hook (optional). Streamed content is not reassembled,
 	// so the output digest is empty (correlation-only output anchor). Dispatched

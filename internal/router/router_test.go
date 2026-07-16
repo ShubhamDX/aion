@@ -108,3 +108,19 @@ func TestRouter_FindByProvider(t *testing.T) {
 		t.Fatalf("expected error for unregistered provider")
 	}
 }
+
+func TestRouterCarriesConfiguredMaxTokens(t *testing.T) {
+	cfg := &config.Config{Providers: config.ProvidersConfig{
+		Bedrock: &config.ProviderConfig{Models: []config.ModelConfig{
+			{ID: "bedrock-model", Tier: 1, MaxTokens: 2048},
+		}},
+	}}
+	r := NewRouter(cfg, nil)
+	model, err := r.FindModel("bedrock-model")
+	if err != nil {
+		t.Fatalf("FindModel: %v", err)
+	}
+	if model.MaxTokens != 2048 {
+		t.Fatalf("MaxTokens = %d, want 2048", model.MaxTokens)
+	}
+}

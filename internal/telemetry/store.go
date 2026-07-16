@@ -181,6 +181,124 @@ func (s *Store) RecordBudgetUsage(ctx context.Context, apiKeyID string, date str
 	return nil
 }
 
+// MigrateBudgetUsageKey moves legacy rows from a raw API-key identifier to a
+// non-secret stable identifier. Existing rows for the destination are merged.
+func (s *Store) MigrateBudgetUsageKey(ctx context.Context, oldID, newID string) error {
+	if oldID == "" || newID == "" || oldID == newID {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("telemetry: begin budget key migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	const merge = `INSERT INTO budget_usage (api_key_id, date, cost_usd)
+		SELECT ?, date, SUM(cost_usd) FROM budget_usage WHERE api_key_id = ? GROUP BY date
+		ON CONFLICT(api_key_id, date) DO UPDATE SET cost_usd = cost_usd + excluded.cost_usd`
+	if _, err := tx.ExecContext(ctx, merge, newID, oldID); err != nil {
+		return fmt.Errorf("telemetry: merge budget key rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM budget_usage WHERE api_key_id = ?`, oldID); err != nil {
+		return fmt.Errorf("telemetry: delete legacy budget key rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("telemetry: commit budget key migration: %w", err)
+	}
+	return nil
+}
+
+// ReserveBudgetUsage atomically checks the projected daily and monthly usage,
+// then adds the estimate to the daily row. Serializing this transaction with
+// the store's single SQLite connection prevents concurrent requests from both
+// passing the same remaining budget check.
+func (s *Store) ReserveBudgetUsage(
+	ctx context.Context,
+	apiKeyID string,
+	date string,
+	yearMonth string,
+	estimate float64,
+	dailyLimit float64,
+	monthlyLimit float64,
+) (dailyUsage float64, monthlyUsage float64, exceeded string, err error) {
+	if estimate < 0 {
+		return 0, 0, "", fmt.Errorf("telemetry: budget estimate must not be negative")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("telemetry: begin budget reservation: %w", err)
+	}
+	defer tx.Rollback()
+
+	const dailyQuery = `SELECT COALESCE(cost_usd, 0) FROM budget_usage WHERE api_key_id = ? AND date = ?`
+	if err := tx.QueryRowContext(ctx, dailyQuery, apiKeyID, date).Scan(&dailyUsage); err != nil && err != sql.ErrNoRows {
+		return 0, 0, "", fmt.Errorf("telemetry: get daily usage for reservation: %w", err)
+	}
+
+	const monthlyQuery = `SELECT COALESCE(SUM(cost_usd), 0) FROM budget_usage
+		WHERE api_key_id = ? AND date LIKE ? || '%'`
+	if err := tx.QueryRowContext(ctx, monthlyQuery, apiKeyID, yearMonth).Scan(&monthlyUsage); err != nil {
+		return 0, 0, "", fmt.Errorf("telemetry: get monthly usage for reservation: %w", err)
+	}
+
+	if dailyLimit > 0 && dailyUsage+estimate > dailyLimit {
+		return dailyUsage, monthlyUsage, "daily", nil
+	}
+	if monthlyLimit > 0 && monthlyUsage+estimate > monthlyLimit {
+		return dailyUsage, monthlyUsage, "monthly", nil
+	}
+
+	if estimate > 0 {
+		const reserveQuery = `INSERT INTO budget_usage (api_key_id, date, cost_usd)
+			VALUES (?, ?, ?)
+			ON CONFLICT(api_key_id, date) DO UPDATE SET cost_usd = cost_usd + excluded.cost_usd`
+		if _, err := tx.ExecContext(ctx, reserveQuery, apiKeyID, date, estimate); err != nil {
+			return 0, 0, "", fmt.Errorf("telemetry: reserve budget usage: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, "", fmt.Errorf("telemetry: commit budget reservation: %w", err)
+	}
+	return dailyUsage, monthlyUsage, "", nil
+}
+
+// AdjustBudgetUsage replaces a prior estimate with actual cost. A process crash
+// can leave an estimate in place, which fails closed by reducing the remaining
+// budget until an operator reconciles the usage row.
+func (s *Store) AdjustBudgetUsage(ctx context.Context, apiKeyID string, date string, delta float64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("telemetry: begin budget adjustment: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE budget_usage SET cost_usd = MAX(cost_usd + ?, 0) WHERE api_key_id = ? AND date = ?`,
+		delta, apiKeyID, date,
+	)
+	if err != nil {
+		return fmt.Errorf("telemetry: adjust budget usage: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("telemetry: inspect budget adjustment: %w", err)
+	}
+	if rows == 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO budget_usage (api_key_id, date, cost_usd) VALUES (?, ?, MAX(?, 0))`,
+			apiKeyID, date, delta,
+		); err != nil {
+			return fmt.Errorf("telemetry: insert budget adjustment: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("telemetry: commit budget adjustment: %w", err)
+	}
+	return nil
+}
+
 // GetDailyUsage returns the total cost for an API key on a specific date (YYYY-MM-DD).
 func (s *Store) GetDailyUsage(ctx context.Context, apiKeyID string, date string) (float64, error) {
 	const q = `SELECT COALESCE(cost_usd, 0) FROM budget_usage WHERE api_key_id = ? AND date = ?`

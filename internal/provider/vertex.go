@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	vertexDefaultRegion     = "us-east5"
-	vertexAnthropicVersion  = "vertex-2023-10-16"
-	vertexDefaultMaxTok     = 4096
+	vertexDefaultRegion    = "us-east5"
+	vertexAnthropicVersion = "vertex-2023-10-16"
+	vertexDefaultMaxTok    = 4096
 )
 
 // vertexRequest is the Anthropic Messages API request for Vertex AI.
@@ -160,16 +160,7 @@ func (p *VertexProvider) translateRequest(req *types.ChatCompletionRequest, stre
 		vReq.MaxTokens = *req.MaxTokens
 	}
 
-	for _, m := range req.Messages {
-		if m.Role == "system" {
-			vReq.System = m.ContentString()
-			continue
-		}
-		vReq.Messages = append(vReq.Messages, anthropicMsg{
-			Role:    m.Role,
-			Content: m.ContentString(),
-		})
-	}
+	vReq.System, vReq.Messages = translateAnthropicMessages(req.Messages)
 
 	for _, t := range req.Tools {
 		vReq.Tools = append(vReq.Tools, anthropicTool{

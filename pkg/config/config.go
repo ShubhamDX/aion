@@ -19,8 +19,9 @@ type ServerConfig struct {
 
 // AuthConfig controls API-key authentication.
 type AuthConfig struct {
-	Enabled bool        `yaml:"enabled"`
-	Keys    []KeyConfig `yaml:"keys"`
+	Enabled         bool        `yaml:"enabled"`
+	Keys            []KeyConfig `yaml:"keys"`
+	ManagedKeysPath string      `yaml:"managed_keys_path,omitempty"`
 }
 
 // KeyConfig represents a single API key with optional budget limits.
@@ -71,11 +72,15 @@ type ManagedLlamaConfig struct {
 
 // ProviderConfig is the configuration for a single LLM provider.
 type ProviderConfig struct {
-	APIKey    string        `yaml:"api_key"`
-	BaseURL   string        `yaml:"base_url,omitempty"`
-	Region    string        `yaml:"region,omitempty"`
-	ProjectID string        `yaml:"project_id,omitempty"`
-	Models    []ModelConfig `yaml:"models"`
+	APIKey         string        `yaml:"api_key"`
+	BaseURL        string        `yaml:"base_url,omitempty"`
+	Region         string        `yaml:"region,omitempty"`
+	ProjectID      string        `yaml:"project_id,omitempty"`
+	CredentialMode string        `yaml:"credential_mode,omitempty"`
+	RoleARN        string        `yaml:"role_arn,omitempty"`
+	ExternalID     string        `yaml:"external_id,omitempty"`
+	SessionName    string        `yaml:"session_name,omitempty"`
+	Models         []ModelConfig `yaml:"models"`
 }
 
 // ModelConfig describes a model exposed through a provider.

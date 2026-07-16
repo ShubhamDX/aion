@@ -24,10 +24,10 @@ import (
 // types.SessionMaterialFromRequest). It is read but never logged raw.
 const sessionIDHeader = "X-AION-Session-Id"
 
-// BudgetChecker validates whether a request is within budget and records spend.
+// BudgetChecker reserves worst-case request cost and settles actual spend.
 type BudgetChecker interface {
-	Check(ctx context.Context, apiKeyID string, dailyLimit, monthlyLimit float64) error
-	Record(ctx context.Context, apiKeyID string, costUSD float64) error
+	Reserve(ctx context.Context, apiKeyID string, estimate, dailyLimit, monthlyLimit float64) (string, error)
+	Settle(ctx context.Context, apiKeyID, date string, estimate, actual float64) error
 }
 
 // Handler orchestrates the full lifecycle of a proxied chat completion request:
@@ -211,15 +211,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// 3. Budget check.
-	if keyInfo != nil && h.budget != nil {
-		if err := h.budget.Check(ctx, keyInfo.Key, keyInfo.DailyLimitUSD, keyInfo.MonthlyLimitUSD); err != nil {
-			writeError(w, http.StatusTooManyRequests, "budget_exceeded", err.Error())
-			return
-		}
-	}
-
-	// 4. Resolve provider.
+	// 3. Resolve provider.
 	prov, ok := h.registry.Get(selectedModel.Provider)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "provider_error",
@@ -256,7 +248,12 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Dispatch -- streaming or non-streaming.
 	if req.Stream {
-		h.handleStream(w, r, &req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)
+		reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
+		if err != nil {
+			writeError(w, http.StatusTooManyRequests, "budget_exceeded", err.Error())
+			return
+		}
+		h.handleStream(w, r, &req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial, reservationDate, reservedCost)
 		return
 	}
 
@@ -283,9 +280,16 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// and before dispatch. Nil hook or nil result leaves the request unchanged.
 	h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier)
 
+	reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
+	if err != nil {
+		writeError(w, http.StatusTooManyRequests, "budget_exceeded", err.Error())
+		return
+	}
+
 	// Non-streaming path.
 	resp, err := prov.Send(ctx, &req, selectedModel.ID)
 	if err != nil {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		slog.Error("provider error",
 			"provider", selectedModel.Provider,
 			"model", selectedModel.ID,
@@ -326,10 +330,11 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Record budget spend.
-	if keyInfo != nil && h.budget != nil && costUSD > 0 {
-		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	settledCost := reservedCost
+	if resp.ChatResponse != nil && resp.ChatResponse.Usage.TotalTokens > 0 {
+		settledCost = costUSD
 	}
+	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
 	// Write response FIRST, so the customer response is fully served before the
 	// post-response hook runs. The hook records signed evidence (and an embedding
@@ -372,24 +377,64 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// estimatedCost estimates the cost of a request against a model before dispatch,
-// using a rough token estimate from the prompt. Used to feed the pre-request
-// budget decision; the post-response path records actual cost.
+// estimatedCost computes a conservative reservation before dispatch. JSON byte
+// length is used as an input-token upper bound, with framing allowance. Output
+// uses the requested cap, the configured model cap or the provider default.
 func (h *Handler) estimatedCost(req *types.ChatCompletionRequest, model *router.ModelOption) float64 {
 	if h.pricing == nil || model == nil {
 		return 0
 	}
-	// Rough prompt-token estimate: ~4 chars/token across all message content.
-	chars := 0
-	for _, m := range req.Messages {
-		chars += len(m.ContentString())
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return 0
 	}
-	promptTokens := chars / 4
-	outTokens := 256
+	promptTokens := len(payload) + 64*len(req.Messages) + 256
+	outTokens := model.MaxTokens
+	if outTokens <= 0 {
+		outTokens = 4096
+	}
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		outTokens = *req.MaxTokens
 	}
 	return h.pricing.EstimateCost(model.ID, promptTokens, outTokens)
+}
+
+func (h *Handler) reserveBudget(
+	ctx context.Context,
+	req *types.ChatCompletionRequest,
+	model *router.ModelOption,
+	keyInfo *apikey.KeyInfo,
+) (string, float64, error) {
+	if keyInfo == nil || h.budget == nil {
+		return "", 0, nil
+	}
+	estimate := h.estimatedCost(req, model)
+	if (keyInfo.DailyLimitUSD > 0 || keyInfo.MonthlyLimitUSD > 0) &&
+		model != nil && model.Provider != "local" && estimate <= 0 {
+		return "", 0, fmt.Errorf("cost estimate unavailable for provider %q model %q", model.Provider, model.ID)
+	}
+	date, err := h.budget.Reserve(
+		ctx, keyInfo.Key, estimate, keyInfo.DailyLimitUSD, keyInfo.MonthlyLimitUSD,
+	)
+	if err != nil {
+		return "", 0, err
+	}
+	return date, estimate, nil
+}
+
+func (h *Handler) settleBudget(
+	ctx context.Context,
+	keyInfo *apikey.KeyInfo,
+	date string,
+	estimate float64,
+	actual float64,
+) {
+	if keyInfo == nil || h.budget == nil || date == "" {
+		return
+	}
+	if err := h.budget.Settle(context.WithoutCancel(ctx), keyInfo.Key, date, estimate, actual); err != nil {
+		slog.Error("budget settlement failed", "api_key_id", keyIDFromInfo(keyInfo), "error", err)
+	}
 }
 
 // resolveRouteOverride resolves a VerdictRoute decision to a concrete model.

@@ -16,7 +16,7 @@ import (
 func cachedModelHandler() *Handler {
 	cfg := &config.Config{}
 	cfg.Providers.Anthropic = &config.ProviderConfig{Models: []config.ModelConfig{
-		{ID: "sonnet", Tier: 2, InputPricePer1M: 3, CachedInputPricePer1M: 0.30, CacheWritePricePer1M: 3.75, OutputPricePer1M: 15},
+		{ID: "sonnet", Tier: 2, InputPricePer1M: 3, CachedInputPricePer1M: 0.30, CacheWritePricePer1M: 3.75, OutputPricePer1M: 15, MaxTokens: 4096},
 	}}
 	return &Handler{
 		router:  router.NewRouter(cfg, nil),
@@ -30,22 +30,36 @@ func cachedModelHandler() *Handler {
 func TestEstimatedCostIsCacheBlind(t *testing.T) {
 	h := cachedModelHandler()
 	model, _ := h.router.FindModel("sonnet")
-	// ~400 chars -> ~100 prompt tokens; max_tokens caps output at 10.
+	// max_tokens caps output at 10.
 	maxTok := 10
 	req := &types.ChatCompletionRequest{
 		Messages:  []types.Message{{Role: "user", Content: mkContent(400)}},
 		MaxTokens: &maxTok,
 	}
-	// Sanity: ContentString must yield the 400-char body so the token estimate is
-	// the 100 we price against below.
-	if got := len(req.Messages[0].ContentString()); got != 400 {
-		t.Fatalf("content length = %d, want 400", got)
-	}
 	got := h.estimatedCost(req, model)
-	// Cache-blind expectation: 100 input @ 3/1M + 10 output @ 15/1M.
-	want := h.pricing.EstimateCost("sonnet", 100, 10)
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// The reservation prices every serialized byte plus framing allowance at
+	// the full input rate. It does not assume a future cache hit.
+	want := h.pricing.EstimateCost("sonnet", len(payload)+64*len(req.Messages)+256, 10)
 	if got != want {
 		t.Fatalf("estimatedCost = %.10f, want cache-blind EstimateCost %.10f", got, want)
+	}
+}
+
+func TestEstimatedCostUsesConfiguredOutputCapWhenRequestOmitsIt(t *testing.T) {
+	h := cachedModelHandler()
+	model, _ := h.router.FindModel("sonnet")
+	req := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: mkContent(20)}}}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	want := h.pricing.EstimateCost("sonnet", len(payload)+64*len(req.Messages)+256, 4096)
+	if got := h.estimatedCost(req, model); got != want {
+		t.Fatalf("estimatedCost = %.10f, want configured-cap estimate %.10f", got, want)
 	}
 }
 

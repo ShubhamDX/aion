@@ -38,6 +38,11 @@ type Options struct {
 	// ConfigPath is the path to the YAML configuration file.
 	ConfigPath string
 
+	// Config supplies an already loaded configuration. An embedding product can
+	// use this to apply its own configuration layering once and pass the exact
+	// result to the OSS runtime. When set, ConfigPath is ignored.
+	Config *config.Config
+
 	// GatewayHooks is the optional pre-request / post-response extension surface
 	// (an embedding product wraps the proxy request lifecycle here). nil leaves
 	// OSS behavior unchanged.
@@ -73,7 +78,7 @@ type App struct {
 // telemetry, providers, router, and HTTP server. If opts.Classifier is nil the
 // built-in TF-IDF classifier is used.
 func Build(opts Options) (*App, error) {
-	cfg, err := config.Load(opts.ConfigPath)
+	cfg, err := loadConfig(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +115,13 @@ func Build(opts Options) (*App, error) {
 		registry.Register(provider.NewOpenRouter(cfg.Providers.OpenRouter))
 	}
 	if cfg.Providers.Bedrock != nil {
-		registry.Register(provider.NewBedrock(cfg.Providers.Bedrock))
+		bedrockProvider, err := provider.NewBedrock(cfg.Providers.Bedrock)
+		if err != nil {
+			cancel()
+			store.Close()
+			return nil, fmt.Errorf("bedrock provider: %w", err)
+		}
+		registry.Register(bedrockProvider)
 	}
 	if cfg.Providers.Vertex != nil {
 		registry.Register(provider.NewVertex(cfg.Providers.Vertex))
@@ -197,7 +208,7 @@ func Build(opts Options) (*App, error) {
 	// Build middleware chain.
 	var validator *apikey.Validator
 	if cfg.Auth.Enabled {
-		validator = apikey.NewValidator(cfg.Auth.Keys)
+		validator = apikey.NewValidator(cfg.Auth.Keys, cfg.Auth.ManagedKeysPath)
 	}
 
 	handler := server.Chain(
@@ -238,6 +249,16 @@ func Build(opts Options) (*App, error) {
 		localProvider: localProvider,
 		proxyHandler:  proxyHandler,
 	}, nil
+}
+
+func loadConfig(opts Options) (*config.Config, error) {
+	if opts.Config != nil {
+		if err := config.Prepare(opts.Config); err != nil {
+			return nil, fmt.Errorf("config: validation: %w", err)
+		}
+		return opts.Config, nil
+	}
+	return config.Load(opts.ConfigPath)
 }
 
 // DrainPostResponse blocks until all in-flight asynchronous PostResponse hooks

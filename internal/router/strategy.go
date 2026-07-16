@@ -17,6 +17,7 @@ type ModelOption struct {
 	Tier             types.Tier
 	InputPricePer1M  float64
 	OutputPricePer1M float64
+	MaxTokens        int
 }
 
 // CombinedPrice returns total price per 1M tokens (input+output).
