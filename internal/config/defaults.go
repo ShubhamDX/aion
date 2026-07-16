@@ -113,11 +113,52 @@ func validate(cfg *Config) error {
 	}
 
 	// If auth is enabled, at least one key is required.
-	if cfg.Auth.Enabled && len(cfg.Auth.Keys) == 0 {
+	if cfg.Auth.Enabled && len(cfg.Auth.Keys) == 0 && cfg.Auth.ManagedKeysPath == "" {
 		errs = append(errs, errors.New("auth is enabled but no keys are configured"))
 	}
 
+	if bedrock := cfg.Providers.Bedrock; bedrock != nil {
+		switch bedrock.CredentialMode {
+		case "", "bearer", "aws_sdk", "assume_role":
+		default:
+			errs = append(errs, fmt.Errorf("bedrock.credential_mode must be bearer, aws_sdk or assume_role, got %q", bedrock.CredentialMode))
+		}
+		if bedrock.CredentialMode == "bearer" && bedrock.APIKey == "" {
+			errs = append(errs, errors.New("bedrock.api_key is required for bearer credential mode"))
+		}
+		if bedrock.CredentialMode == "assume_role" && bedrock.RoleARN == "" {
+			errs = append(errs, errors.New("bedrock.role_arn is required for assume_role credential mode"))
+		}
+	}
+
+	for providerName, models := range configuredModels(cfg) {
+		for _, model := range models {
+			if model.Tier < 1 || model.Tier > 3 {
+				errs = append(errs, fmt.Errorf("%s model %q tier must be 1, 2 or 3, got %d", providerName, model.ID, model.Tier))
+			}
+		}
+	}
+
 	return errors.Join(errs...)
+}
+
+func configuredModels(cfg *Config) map[string][]ModelConfig {
+	models := map[string][]ModelConfig{}
+	providers := map[string]*ProviderConfig{
+		"openai": cfg.Providers.OpenAI, "anthropic": cfg.Providers.Anthropic,
+		"openrouter": cfg.Providers.OpenRouter, "bedrock": cfg.Providers.Bedrock,
+		"vertex": cfg.Providers.Vertex, "gemini": cfg.Providers.Gemini,
+		"grok": cfg.Providers.Grok,
+	}
+	for name, provider := range providers {
+		if provider != nil {
+			models[name] = provider.Models
+		}
+	}
+	if local := cfg.Providers.Local; local != nil && local.Enabled {
+		models["local"] = local.Models
+	}
+	return models
 }
 
 // hasProvider returns true if at least one provider is configured with at

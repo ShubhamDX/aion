@@ -3,8 +3,10 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +16,11 @@ import (
 
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/types"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 const (
@@ -40,13 +47,15 @@ type bedrockRequest struct {
 // BedrockProvider implements Provider for Claude models on AWS Bedrock.
 type BedrockProvider struct {
 	bearerToken string
+	credentials aws.CredentialsProvider
+	signer      *v4.Signer
 	region      string
 	baseURL     string
 	client      *http.Client
 }
 
 // NewBedrock creates a new Bedrock provider from the given configuration.
-func NewBedrock(cfg *config.ProviderConfig) *BedrockProvider {
+func NewBedrock(cfg *config.ProviderConfig) (*BedrockProvider, error) {
 	region := bedrockDefaultRegion
 	if cfg.Region != "" {
 		region = cfg.Region
@@ -57,12 +66,49 @@ func NewBedrock(cfg *config.ProviderConfig) *BedrockProvider {
 		base = strings.TrimRight(cfg.BaseURL, "/")
 	}
 
-	return &BedrockProvider{
-		bearerToken: cfg.APIKey,
-		region:      region,
-		baseURL:     base,
-		client:      &http.Client{},
+	provider := &BedrockProvider{
+		region:  region,
+		baseURL: base,
+		client:  &http.Client{},
 	}
+	mode := cfg.CredentialMode
+	if mode == "" {
+		if cfg.APIKey != "" {
+			mode = "bearer"
+		} else {
+			mode = "aws_sdk"
+		}
+	}
+	if mode == "bearer" {
+		if cfg.APIKey == "" {
+			return nil, fmt.Errorf("bearer credential mode requires api_key")
+		}
+		provider.bearerToken = cfg.APIKey
+		return provider, nil
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("load AWS credentials: %w", err)
+	}
+	credentials := awsCfg.Credentials
+	if mode == "assume_role" {
+		if cfg.RoleARN == "" {
+			return nil, fmt.Errorf("assume_role credential mode requires role_arn")
+		}
+		assume := stscreds.NewAssumeRoleProvider(sts.NewFromConfig(awsCfg), cfg.RoleARN, func(options *stscreds.AssumeRoleOptions) {
+			if cfg.ExternalID != "" {
+				options.ExternalID = aws.String(cfg.ExternalID)
+			}
+			if cfg.SessionName != "" {
+				options.RoleSessionName = cfg.SessionName
+			}
+		})
+		credentials = aws.NewCredentialsCache(assume)
+	}
+	provider.credentials = credentials
+	provider.signer = v4.NewSigner()
+	return provider, nil
 }
 
 // Name returns "bedrock".
@@ -82,7 +128,9 @@ func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionReq
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: create request: %w", err)
 	}
-	p.setHeaders(httpReq)
+	if err := p.authorize(ctx, httpReq, body); err != nil {
+		return nil, err
+	}
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -126,7 +174,9 @@ func (p *BedrockProvider) SendStream(ctx context.Context, req *types.ChatComplet
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: create request: %w", err)
 	}
-	p.setHeaders(httpReq)
+	if err := p.authorize(ctx, httpReq, body); err != nil {
+		return nil, err
+	}
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -172,9 +222,25 @@ func (p *BedrockProvider) translateRequest(req *types.ChatCompletionRequest, str
 	return bReq
 }
 
-func (p *BedrockProvider) setHeaders(req *http.Request) {
+func (p *BedrockProvider) authorize(ctx context.Context, req *http.Request, body []byte) error {
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.bearerToken)
+	if p.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.bearerToken)
+		return nil
+	}
+	if p.credentials == nil || p.signer == nil {
+		return fmt.Errorf("bedrock: AWS credentials are not configured")
+	}
+	credentials, err := p.credentials.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("bedrock: retrieve AWS credentials: %w", err)
+	}
+	sum := sha256.Sum256(body)
+	payloadHash := hex.EncodeToString(sum[:])
+	if err := p.signer.SignHTTP(ctx, credentials, req, payloadHash, "bedrock", p.region, time.Now().UTC()); err != nil {
+		return fmt.Errorf("bedrock: sign request: %w", err)
+	}
+	return nil
 }
 
 // ---------- Bedrock streaming (AWS Event Stream binary format) ----------

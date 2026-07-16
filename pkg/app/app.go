@@ -115,7 +115,13 @@ func Build(opts Options) (*App, error) {
 		registry.Register(provider.NewOpenRouter(cfg.Providers.OpenRouter))
 	}
 	if cfg.Providers.Bedrock != nil {
-		registry.Register(provider.NewBedrock(cfg.Providers.Bedrock))
+		bedrockProvider, err := provider.NewBedrock(cfg.Providers.Bedrock)
+		if err != nil {
+			cancel()
+			store.Close()
+			return nil, fmt.Errorf("bedrock provider: %w", err)
+		}
+		registry.Register(bedrockProvider)
 	}
 	if cfg.Providers.Vertex != nil {
 		registry.Register(provider.NewVertex(cfg.Providers.Vertex))
@@ -202,7 +208,7 @@ func Build(opts Options) (*App, error) {
 	// Build middleware chain.
 	var validator *apikey.Validator
 	if cfg.Auth.Enabled {
-		validator = apikey.NewValidator(cfg.Auth.Keys)
+		validator = apikey.NewValidator(cfg.Auth.Keys, cfg.Auth.ManagedKeysPath)
 	}
 
 	handler := server.Chain(
