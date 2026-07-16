@@ -45,6 +45,7 @@ func NewRouter(cfg *config.Config, health HealthChecker) *Router {
 				Tier:             types.Tier(m.Tier),
 				InputPricePer1M:  m.InputPricePer1M,
 				OutputPricePer1M: m.OutputPricePer1M,
+				MaxTokens:        m.MaxTokens,
 			}
 			tier := types.Tier(m.Tier)
 			models[tier] = append(models[tier], opt)
@@ -68,6 +69,7 @@ func NewRouter(cfg *config.Config, health HealthChecker) *Router {
 				Tier:             types.Tier(m.Tier),
 				InputPricePer1M:  0,
 				OutputPricePer1M: 0,
+				MaxTokens:        m.MaxTokens,
 			}
 			tier := types.Tier(m.Tier)
 			models[tier] = append(models[tier], opt)

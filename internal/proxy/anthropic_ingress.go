@@ -488,15 +488,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// 4. Budget check.
-	if keyInfo != nil && h.budget != nil {
-		if err := h.budget.Check(ctx, keyInfo.Key, keyInfo.DailyLimitUSD, keyInfo.MonthlyLimitUSD); err != nil {
-			writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
-			return
-		}
-	}
-
-	// 5. Resolve provider.
+	// 4. Resolve provider.
 	prov, ok := h.registry.Get(selectedModel.Provider)
 	if !ok {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error",
@@ -530,9 +522,14 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Dispatch — streaming or non-streaming.
+	// 7. Dispatch: streaming or non-streaming.
 	if req.Stream {
-		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial)
+		reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
+		if err != nil {
+			writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
+			return
+		}
+		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial, reservationDate, reservedCost)
 		return
 	}
 
@@ -557,9 +554,16 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// and before dispatch. Nil hook or nil result leaves the request unchanged.
 	h.applyOutputControl(req, requestID, keyInfo, model, selectedModel, tier)
 
+	reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
+	if err != nil {
+		writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
+		return
+	}
+
 	// Non-streaming path.
 	resp, err := prov.Send(ctx, req, selectedModel.ID)
 	if err != nil {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		slog.Error("provider error",
 			"provider", selectedModel.Provider,
 			"model", selectedModel.ID,
@@ -600,10 +604,11 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Record budget spend.
-	if keyInfo != nil && h.budget != nil && costUSD > 0 {
-		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	settledCost := reservedCost
+	if resp.ChatResponse != nil && resp.ChatResponse.Usage.TotalTokens > 0 {
+		settledCost = costUSD
 	}
+	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
 	// Write response FIRST (same ordering as the OpenAI path): the customer
 	// response is fully served before the post-response hook runs, so the hook's
@@ -660,11 +665,14 @@ func (h *Handler) handleAnthropicStream(
 	requestID string,
 	start time.Time,
 	sessionMaterial types.SessionMaterial,
+	reservationDate string,
+	reservedCost float64,
 ) {
 	ctx := r.Context()
 
 	stream, err := prov.SendStream(ctx, req, model.ID)
 	if err != nil {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		slog.Error("stream error",
 			"provider", model.Provider,
 			"model", model.ID,
@@ -678,6 +686,7 @@ func (h *Handler) handleAnthropicStream(
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error",
 			"Streaming not supported")
 		return
@@ -711,11 +720,13 @@ func (h *Handler) handleAnthropicStream(
 	blockIndex := 0
 	var totalUsage types.Usage
 	var lastFinishReason string
+	streamComplete := false
 
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
 			if err == io.EOF {
+				streamComplete = true
 				break
 			}
 			slog.Error("stream read error", "error", err)
@@ -761,7 +772,7 @@ func (h *Handler) handleAnthropicStream(
 				writeSSEEvent(w, flusher, "content_block_delta", cbDelta)
 			}
 
-			// Tool call deltas — emit as tool_use blocks.
+			// Emit tool call deltas as tool_use blocks.
 			for _, tc := range choice.Delta.ToolCalls {
 				if contentBlockStarted {
 					cbStop := map[string]interface{}{
@@ -863,10 +874,11 @@ func (h *Handler) handleAnthropicStream(
 		})
 	}
 
-	// Record budget spend.
-	if keyInfo != nil && h.budget != nil && costUSD > 0 {
-		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	settledCost := reservedCost
+	if streamComplete && totalUsage.TotalTokens > 0 {
+		settledCost = costUSD
 	}
+	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
 	// Gateway post-response hook (optional). Streamed content is not reassembled,
 	// so the output digest is empty (correlation-only output anchor). Dispatched

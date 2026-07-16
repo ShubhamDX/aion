@@ -37,7 +37,7 @@ type anthropicRequest struct {
 
 type anthropicMsg struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 type anthropicTool struct {
@@ -57,11 +57,13 @@ type anthropicResponse struct {
 }
 
 type anthropicContent struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   any             `json:"content,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -89,9 +91,10 @@ type anthropicStreamEvent struct {
 }
 
 type anthropicDelta struct {
-	Type       string `json:"type,omitempty"`
-	Text       string `json:"text,omitempty"`
-	StopReason string `json:"stop_reason,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
 }
 
 // ---------- AnthropicProvider ----------
@@ -205,17 +208,7 @@ func (p *AnthropicProvider) translateRequest(req *types.ChatCompletionRequest, m
 		aReq.MaxTokens = *req.MaxTokens
 	}
 
-	// Extract system message and convert the rest.
-	for _, m := range req.Messages {
-		if m.Role == "system" {
-			aReq.System = m.ContentString()
-			continue
-		}
-		aReq.Messages = append(aReq.Messages, anthropicMsg{
-			Role:    m.Role,
-			Content: m.ContentString(),
-		})
-	}
+	aReq.System, aReq.Messages = translateAnthropicMessages(req.Messages)
 
 	// Convert tools.
 	for _, t := range req.Tools {
@@ -227,6 +220,120 @@ func (p *AnthropicProvider) translateRequest(req *types.ChatCompletionRequest, m
 	}
 
 	return aReq
+}
+
+func translateAnthropicMessages(messages []types.Message) (string, []anthropicMsg) {
+	var system string
+	out := make([]anthropicMsg, 0, len(messages))
+
+	for _, m := range messages {
+		switch m.Role {
+		case "system", "developer":
+			appendAnthropicSystem(&system, m.ContentString())
+		case "tool":
+			if m.ToolCallID == "" {
+				out = append(out, anthropicMsg{Role: "user", Content: m.ContentString()})
+				continue
+			}
+			appendAnthropicToolResult(&out, anthropicContent{
+				Type:      "tool_result",
+				ToolUseID: m.ToolCallID,
+				Content:   m.ContentString(),
+			})
+		case "assistant":
+			out = append(out, anthropicMsg{
+				Role:    "assistant",
+				Content: anthropicAssistantContent(m),
+			})
+		case "user":
+			out = append(out, anthropicMsg{Role: "user", Content: m.ContentString()})
+		default:
+			out = append(out, anthropicMsg{Role: "user", Content: m.ContentString()})
+		}
+	}
+
+	return system, out
+}
+
+func appendAnthropicSystem(system *string, content string) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	if *system == "" {
+		*system = content
+		return
+	}
+	*system += "\n\n" + content
+}
+
+func appendAnthropicToolResult(messages *[]anthropicMsg, block anthropicContent) {
+	if len(*messages) > 0 {
+		last := &(*messages)[len(*messages)-1]
+		if last.Role == "user" {
+			if blocks, ok := last.Content.([]anthropicContent); ok && allAnthropicToolResults(blocks) {
+				last.Content = append(blocks, block)
+				return
+			}
+		}
+	}
+	*messages = append(*messages, anthropicMsg{
+		Role:    "user",
+		Content: []anthropicContent{block},
+	})
+}
+
+func allAnthropicToolResults(blocks []anthropicContent) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, b := range blocks {
+		if b.Type != "tool_result" {
+			return false
+		}
+	}
+	return true
+}
+
+func anthropicAssistantContent(m types.Message) any {
+	if len(m.ToolCalls) == 0 {
+		return m.ContentString()
+	}
+
+	blocks := make([]anthropicContent, 0, len(m.ToolCalls)+1)
+	if text := strings.TrimSpace(m.ContentString()); text != "" {
+		blocks = append(blocks, anthropicContent{
+			Type: "text",
+			Text: text,
+		})
+	}
+	for i, tc := range m.ToolCalls {
+		blocks = append(blocks, anthropicContent{
+			Type:  "tool_use",
+			ID:    anthropicToolCallID(tc, i),
+			Name:  tc.Function.Name,
+			Input: anthropicToolInput(tc.Function.Arguments),
+		})
+	}
+	return blocks
+}
+
+func anthropicToolCallID(tc types.ToolCall, index int) string {
+	if tc.ID != "" {
+		return tc.ID
+	}
+	return fmt.Sprintf("call_%d", index)
+}
+
+func anthropicToolInput(arguments string) json.RawMessage {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed)
+	}
+	b, _ := json.Marshal(map[string]string{"arguments": arguments})
+	return b
 }
 
 // ---------- response translation ----------
@@ -313,10 +420,11 @@ func (p *AnthropicProvider) setHeaders(req *http.Request) {
 // ---------- streaming ----------
 
 type anthropicStreamReader struct {
-	reader *bufio.Reader
-	body   io.ReadCloser
-	id     string
-	model  string
+	reader     *bufio.Reader
+	body       io.ReadCloser
+	id         string
+	model      string
+	toolBlocks map[int]types.ToolCall
 }
 
 // ReadChunk reads the next SSE event from the Anthropic stream and translates
@@ -369,25 +477,26 @@ func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) 
 			if err := json.Unmarshal(data, &evt); err != nil {
 				return nil, fmt.Errorf("anthropic stream: unmarshal content_block_delta: %w", err)
 			}
-			var delta anthropicDelta
-			if err := json.Unmarshal(evt.Delta, &delta); err != nil {
+			chunk, err := translateAnthropicContentBlockDelta(s.id, s.model, s.toolBlocks, &evt)
+			if err != nil {
 				return nil, fmt.Errorf("anthropic stream: unmarshal delta: %w", err)
 			}
-			content := delta.Text
-			return &types.ChatCompletionChunk{
-				ID:      s.id,
-				Object:  "chat.completion.chunk",
-				Created: time.Now().Unix(),
-				Model:   s.model,
-				Choices: []types.ChunkChoice{
-					{
-						Index: 0,
-						Delta: types.ChunkDelta{
-							Content: &content,
-						},
-					},
-				},
-			}, nil
+			if chunk != nil {
+				return chunk, nil
+			}
+			continue
+
+		case "content_block_start":
+			var evt anthropicStreamEvent
+			if err := json.Unmarshal(data, &evt); err != nil {
+				return nil, fmt.Errorf("anthropic stream: unmarshal content_block_start: %w", err)
+			}
+			var chunk *types.ChatCompletionChunk
+			chunk, s.toolBlocks = translateAnthropicContentBlockStart(s.id, s.model, s.toolBlocks, &evt)
+			if chunk != nil {
+				return chunk, nil
+			}
+			continue
 
 		case "message_delta":
 			var evt anthropicStreamEvent
@@ -423,10 +532,91 @@ func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) 
 			return nil, io.EOF
 
 		default:
-			// Skip unknown event types (ping, content_block_start, content_block_stop, etc.)
+			// Skip unknown event types (ping, content_block_stop, etc.)
 			continue
 		}
 	}
+}
+
+func translateAnthropicContentBlockStart(id, model string, toolBlocks map[int]types.ToolCall, evt *anthropicStreamEvent) (*types.ChatCompletionChunk, map[int]types.ToolCall) {
+	if evt.ContentBlock == nil || evt.ContentBlock.Type != "tool_use" {
+		return nil, toolBlocks
+	}
+	if toolBlocks == nil {
+		toolBlocks = make(map[int]types.ToolCall)
+	}
+	call := types.ToolCall{
+		Index: ptrInt(evt.Index),
+		ID:    evt.ContentBlock.ID,
+		Type:  "function",
+		Function: types.FunctionCall{
+			Name:      evt.ContentBlock.Name,
+			Arguments: "",
+		},
+	}
+	toolBlocks[evt.Index] = call
+	return anthropicToolCallChunk(id, model, call), toolBlocks
+}
+
+func translateAnthropicContentBlockDelta(id, model string, toolBlocks map[int]types.ToolCall, evt *anthropicStreamEvent) (*types.ChatCompletionChunk, error) {
+	var delta anthropicDelta
+	if err := json.Unmarshal(evt.Delta, &delta); err != nil {
+		return nil, err
+	}
+	if delta.PartialJSON != "" || delta.Type == "input_json_delta" {
+		call := types.ToolCall{
+			Index: ptrInt(evt.Index),
+			Type:  "function",
+			Function: types.FunctionCall{
+				Arguments: delta.PartialJSON,
+			},
+		}
+		if prev, ok := toolBlocks[evt.Index]; ok {
+			call.ID = prev.ID
+			call.Type = prev.Type
+			call.Function.Name = prev.Function.Name
+		}
+		return anthropicToolCallChunk(id, model, call), nil
+	}
+	if delta.Text == "" && delta.Type != "text_delta" {
+		return nil, nil
+	}
+	content := delta.Text
+	return &types.ChatCompletionChunk{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: time.Now().Unix(),
+		Model:   model,
+		Choices: []types.ChunkChoice{
+			{
+				Index: 0,
+				Delta: types.ChunkDelta{
+					Content: &content,
+				},
+			},
+		},
+	}, nil
+}
+
+func anthropicToolCallChunk(id, model string, call types.ToolCall) *types.ChatCompletionChunk {
+	return &types.ChatCompletionChunk{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: time.Now().Unix(),
+		Model:   model,
+		Choices: []types.ChunkChoice{
+			{
+				Index: 0,
+				Delta: types.ChunkDelta{
+					ToolCalls: []types.ToolCall{call},
+				},
+			},
+		},
+	}
+}
+
+func ptrInt(v int) *int {
+	return &v
 }
 
 // readSSEEvent reads lines until it has a complete SSE event (event + data).

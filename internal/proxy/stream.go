@@ -31,11 +31,14 @@ func (h *Handler) handleStream(
 	requestID string,
 	start time.Time,
 	sessionMaterial types.SessionMaterial,
+	reservationDate string,
+	reservedCost float64,
 ) {
 	ctx := r.Context()
 
 	stream, err := prov.SendStream(ctx, req, model.ID)
 	if err != nil {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		slog.Error("stream error",
 			"provider", model.Provider,
 			"model", model.ID,
@@ -50,6 +53,7 @@ func (h *Handler) handleStream(
 	// Verify the ResponseWriter supports flushing.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, reservedCost)
 		writeError(w, http.StatusInternalServerError, "server_error",
 			"Streaming not supported")
 		return
@@ -62,11 +66,13 @@ func (h *Handler) handleStream(
 	w.WriteHeader(http.StatusOK)
 
 	var totalUsage types.Usage
+	streamComplete := false
 
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
 			if err == io.EOF {
+				streamComplete = true
 				break
 			}
 			slog.Error("stream read error", "error", err)
@@ -119,10 +125,11 @@ func (h *Handler) handleStream(
 		})
 	}
 
-	// Record budget spend.
-	if keyInfo != nil && h.budget != nil && costUSD > 0 {
-		_ = h.budget.Record(ctx, keyInfo.Key, costUSD)
+	settledCost := reservedCost
+	if streamComplete && totalUsage.TotalTokens > 0 {
+		settledCost = costUSD
 	}
+	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
 	// Gateway post-response hook (optional). Dispatched ASYNCHRONOUSLY (same
 	// contract as the non-stream paths): the hook cannot delay stream completion,

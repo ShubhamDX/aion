@@ -41,11 +41,16 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse yaml: %w", err)
 	}
 
-	applyDefaults(&cfg)
-
-	if err := validate(&cfg); err != nil {
+	if err := Prepare(&cfg); err != nil {
 		return nil, fmt.Errorf("config: validation: %w", err)
 	}
 
 	return &cfg, nil
+}
+
+// Prepare applies OSS defaults and validates an already decoded config. It is
+// used by embedding products that load layered configuration themselves.
+func Prepare(cfg *Config) error {
+	applyDefaults(cfg)
+	return validate(cfg)
 }

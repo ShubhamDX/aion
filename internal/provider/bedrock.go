@@ -159,16 +159,7 @@ func (p *BedrockProvider) translateRequest(req *types.ChatCompletionRequest, str
 		bReq.MaxTokens = *req.MaxTokens
 	}
 
-	for _, m := range req.Messages {
-		if m.Role == "system" {
-			bReq.System = m.ContentString()
-			continue
-		}
-		bReq.Messages = append(bReq.Messages, anthropicMsg{
-			Role:    m.Role,
-			Content: m.ContentString(),
-		})
-	}
+	bReq.System, bReq.Messages = translateAnthropicMessages(req.Messages)
 
 	for _, t := range req.Tools {
 		bReq.Tools = append(bReq.Tools, anthropicTool{
@@ -196,10 +187,11 @@ type bedrockEventPayload struct {
 // bedrockStreamReader reads AWS Event Stream binary frames from Bedrock's
 // invoke-with-response-stream endpoint and translates them to OpenAI-compatible chunks.
 type bedrockStreamReader struct {
-	reader io.Reader
-	body   io.ReadCloser
-	id     string
-	model  string
+	reader     io.Reader
+	body       io.ReadCloser
+	id         string
+	model      string
+	toolBlocks map[int]types.ToolCall
 }
 
 // ReadChunk reads the next event from the Bedrock binary stream and translates
@@ -286,23 +278,16 @@ func (s *bedrockStreamReader) translateEvent(evt *anthropicStreamEvent) (chunk *
 		}, false
 
 	case "content_block_delta":
-		var delta anthropicDelta
-		if err := json.Unmarshal(evt.Delta, &delta); err != nil {
+		chunk, err := translateAnthropicContentBlockDelta(s.id, s.model, s.toolBlocks, evt)
+		if err != nil {
 			return nil, false
 		}
-		content := delta.Text
-		return &types.ChatCompletionChunk{
-			ID:      s.id,
-			Object:  "chat.completion.chunk",
-			Created: time.Now().Unix(),
-			Model:   s.model,
-			Choices: []types.ChunkChoice{
-				{
-					Index: 0,
-					Delta: types.ChunkDelta{Content: &content},
-				},
-			},
-		}, false
+		return chunk, false
+
+	case "content_block_start":
+		var chunk *types.ChatCompletionChunk
+		chunk, s.toolBlocks = translateAnthropicContentBlockStart(s.id, s.model, s.toolBlocks, evt)
+		return chunk, false
 
 	case "message_delta":
 		var delta anthropicDelta
