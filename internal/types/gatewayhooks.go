@@ -17,12 +17,23 @@ type OutputControlInput = pkgtypes.OutputControlInput
 type OutputControlResult = pkgtypes.OutputControlResult
 type SessionMaterial = pkgtypes.SessionMaterial
 type SessionSource = pkgtypes.SessionSource
+type ProposedToolCall = pkgtypes.ProposedToolCall
+type ResponseActionInput = pkgtypes.ResponseActionInput
+type ResponseActionVerdict = pkgtypes.ResponseActionVerdict
+type ResponseActionCallDecision = pkgtypes.ResponseActionCallDecision
+type ResponseActionDecision = pkgtypes.ResponseActionDecision
 
 const (
 	VerdictAllow = pkgtypes.VerdictAllow
 	VerdictRoute = pkgtypes.VerdictRoute
 	VerdictBlock = pkgtypes.VerdictBlock
 	VerdictHold  = pkgtypes.VerdictHold
+
+	ActionAllow = pkgtypes.ActionAllow
+	ActionBlock = pkgtypes.ActionBlock
+	ActionHold  = pkgtypes.ActionHold
+
+	MaxBufferedToolCallArgsBytes = pkgtypes.MaxBufferedToolCallArgsBytes
 
 	SessionSourceHeader  = pkgtypes.SessionSourceHeader
 	SessionSourceBody    = pkgtypes.SessionSourceBody
@@ -38,4 +49,5 @@ var (
 	NextCachePrefixMaterial    = pkgtypes.NextCachePrefixMaterial
 	ScrubSessionID             = pkgtypes.ScrubSessionID
 	ResponseContentStrings     = pkgtypes.ResponseContentStrings
+	ArgsDigestHex              = pkgtypes.ArgsDigestHex
 )

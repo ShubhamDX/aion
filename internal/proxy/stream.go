@@ -68,6 +68,28 @@ func (h *Handler) handleStream(
 	var totalUsage types.Usage
 	streamComplete := false
 
+	// Response-action governance (optional): when installed, buffer tool-call
+	// fragments so a COMPLETE tool call is evaluated before any is released.
+	// Content-only and usage chunks still flush immediately, so ordinary
+	// inference streams unchanged; only the tool-call chunks are held. A nil hook
+	// keeps the original straight-through relay.
+	governTools := h.hooks != nil && h.hooks.ResponseAction != nil
+	var toolBuf *streamToolBuffer
+	if governTools {
+		toolBuf = newStreamToolBuffer()
+	}
+
+	writeChunk := func(chunk *types.ChatCompletionChunk) bool {
+		data, marshalErr := json.Marshal(chunk)
+		if marshalErr != nil {
+			slog.Error("stream marshal error", "error", marshalErr)
+			return false
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+		return true
+	}
+
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
@@ -84,14 +106,45 @@ func (h *Handler) handleStream(
 			totalUsage.MergeFrom(*chunk.Usage)
 		}
 
-		data, marshalErr := json.Marshal(chunk)
-		if marshalErr != nil {
-			slog.Error("stream marshal error", "error", marshalErr)
-			break
+		// With governance on, hold any chunk carrying a tool-call delta until the
+		// full call set is evaluated; flush everything else immediately.
+		if governTools && chunkHasToolCall(chunk) {
+			toolBuf.add(chunk)
+			continue
 		}
 
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		flusher.Flush()
+		if !writeChunk(chunk) {
+			break
+		}
+	}
+
+	// If governance buffered tool calls, evaluate the complete set now and either
+	// replay the buffered chunks (all allowed) or emit the action envelope.
+	if governTools && toolBuf.hasToolCalls() {
+		proposed, perr := toolBuf.proposed()
+		if perr != nil {
+			// Oversized/malformed buffered args: fail closed. Emit a block envelope
+			// with no per-call detail (we could not assemble the calls) so no tool
+			// call reaches the client.
+			writeChunk(envelopeChunk(model.ID, nil, types.ResponseActionDecision{ReasonCode: "tool_args_too_large"}))
+		} else {
+			decision := h.hooks.ResponseAction(types.ResponseActionInput{
+				RequestID:     requestID,
+				PrincipalID:   keyIDFromInfo(keyInfo),
+				RequestDigest: types.RequestContentDigest(req),
+				Protocol:      "openai_chat",
+				ToolCalls:     proposed,
+			})
+			if decision.AllAllowed() {
+				for _, c := range toolBuf.bufferedChunks {
+					if !writeChunk(c) {
+						break
+					}
+				}
+			} else {
+				writeChunk(envelopeChunk(model.ID, proposed, decision))
+			}
+		}
 	}
 
 	// Terminate the SSE stream.

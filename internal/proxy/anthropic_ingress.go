@@ -610,6 +610,25 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
+	// Response-action governance (optional): same contract as the OpenAI path.
+	// Normalize the complete proposed tool calls and allow/block/hold BEFORE the
+	// translate-and-write, so no blocked or held tool_use block reaches the
+	// client. On a not-all-allowed decision the response is rewritten to the
+	// action envelope, which translateOpenAIToAnthropic then renders as ordinary
+	// assistant text.
+	if h.hooks != nil && h.hooks.ResponseAction != nil && resp.ChatResponse != nil {
+		proposed := proposedToolCallsFromResponse(resp.ChatResponse)
+		if decision, applies := evaluateResponseAction(h.hooks.ResponseAction, types.ResponseActionInput{
+			RequestID:     requestID,
+			PrincipalID:   keyIDFromInfo(keyInfo),
+			RequestDigest: types.RequestContentDigest(req),
+			Protocol:      "anthropic",
+			ToolCalls:     proposed,
+		}); applies && !decision.AllAllowed() {
+			rewriteResponseWithEnvelope(resp.ChatResponse, proposed, decision)
+		}
+	}
+
 	// Write response FIRST (same ordering as the OpenAI path): the customer
 	// response is fully served before the post-response hook runs, so the hook's
 	// evidence recording / response-shape validation can never delay or block the
@@ -742,6 +761,29 @@ func (s *anthropicSSEState) writeChoice(w http.ResponseWriter, flusher http.Flus
 	}
 }
 
+// writeTextBlock emits a complete text content block carrying the given text,
+// used to render the action envelope in place of withheld tool_use blocks.
+func (s *anthropicSSEState) writeTextBlock(w http.ResponseWriter, flusher http.Flusher, text string) {
+	s.closeBlock(w, flusher)
+	writeSSEEvent(w, flusher, "content_block_start", map[string]interface{}{
+		"type":  "content_block_start",
+		"index": s.blockIndex,
+		"content_block": map[string]interface{}{
+			"type": "text",
+			"text": "",
+		},
+	})
+	s.blockOpen = true
+	writeSSEEvent(w, flusher, "content_block_delta", map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": s.blockIndex,
+		"delta": map[string]interface{}{
+			"type": "text_delta",
+			"text": text,
+		},
+	})
+}
+
 // handleAnthropicStream reads OpenAI SSE chunks from a provider and emits
 // Anthropic-format SSE events to the client.
 func (h *Handler) handleAnthropicStream(
@@ -813,6 +855,14 @@ func (h *Handler) handleAnthropicStream(
 	var lastFinishReason string
 	streamComplete := false
 
+	// Response-action governance (optional): when installed, hold tool-call chunks
+	// until the complete set is evaluated; text deltas stream unchanged.
+	governTools := h.hooks != nil && h.hooks.ResponseAction != nil
+	var toolBuf *streamToolBuffer
+	if governTools {
+		toolBuf = newStreamToolBuffer()
+	}
+
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
@@ -828,6 +878,17 @@ func (h *Handler) handleAnthropicStream(
 			totalUsage.MergeFrom(*chunk.Usage)
 		}
 
+		if governTools && chunkHasToolCall(chunk) {
+			toolBuf.add(chunk)
+			// Still capture a finish reason carried on a tool-call chunk.
+			for _, choice := range chunk.Choices {
+				if choice.FinishReason != nil && *choice.FinishReason != "" {
+					lastFinishReason = *choice.FinishReason
+				}
+			}
+			continue
+		}
+
 		for _, choice := range chunk.Choices {
 			// Track finish reason.
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
@@ -836,6 +897,39 @@ func (h *Handler) handleAnthropicStream(
 			}
 
 			sseState.writeChoice(w, flusher, choice)
+		}
+	}
+
+	// Evaluate buffered tool calls (if any) and either replay them as tool_use
+	// blocks (all allowed) or emit the action envelope as a text block. No
+	// executable tool_use reaches the client on a block/hold.
+	if governTools && toolBuf.hasToolCalls() {
+		proposed, perr := toolBuf.proposed()
+		if perr != nil {
+			sseState.writeTextBlock(w, flusher, `{"aion_action":{"action":"block","reason_code":"tool_args_too_large","calls":[]}}`)
+			lastFinishReason = "stop"
+		} else {
+			decision := h.hooks.ResponseAction(types.ResponseActionInput{
+				RequestID:     requestID,
+				PrincipalID:   keyIDFromInfo(keyInfo),
+				RequestDigest: types.RequestContentDigest(req),
+				Protocol:      "anthropic",
+				ToolCalls:     proposed,
+			})
+			if decision.AllAllowed() {
+				for _, c := range toolBuf.bufferedChunks {
+					for _, choice := range c.Choices {
+						if choice.FinishReason != nil && *choice.FinishReason != "" {
+							continue
+						}
+						sseState.writeChoice(w, flusher, choice)
+					}
+				}
+			} else {
+				env := string(rawStringUnquote(envelopeContentJSON(buildActionEnvelope(proposed, decision))))
+				sseState.writeTextBlock(w, flusher, env)
+				lastFinishReason = "stop"
+			}
 		}
 	}
 
