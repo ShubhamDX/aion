@@ -129,11 +129,14 @@ func (h *Handler) handleStream(
 			writeChunk(envelopeChunk(model.ID, nil, types.ResponseActionDecision{ReasonCode: "tool_args_too_large"}))
 		} else {
 			decision := h.hooks.ResponseAction(types.ResponseActionInput{
-				RequestID:     requestID,
-				PrincipalID:   keyIDFromInfo(keyInfo),
-				RequestDigest: types.RequestContentDigest(req),
-				Protocol:      "openai_chat",
-				ToolCalls:     proposed,
+				RequestID:      requestID,
+				PrincipalID:    keyIDFromInfo(keyInfo),
+				RequestDigest:  types.RequestContentDigest(req),
+				Protocol:       "openai_chat",
+				RoutedProvider: model.Provider,
+				RoutedModel:    model.ID,
+				Tier:           tier,
+				ToolCalls:      proposed,
 			})
 			if decision.AllAllowed() {
 				for _, c := range toolBuf.bufferedChunks {

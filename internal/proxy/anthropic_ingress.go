@@ -619,11 +619,14 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	if h.hooks != nil && h.hooks.ResponseAction != nil && resp.ChatResponse != nil {
 		proposed := proposedToolCallsFromResponse(resp.ChatResponse)
 		if decision, applies := evaluateResponseAction(h.hooks.ResponseAction, types.ResponseActionInput{
-			RequestID:     requestID,
-			PrincipalID:   keyIDFromInfo(keyInfo),
-			RequestDigest: types.RequestContentDigest(req),
-			Protocol:      "anthropic",
-			ToolCalls:     proposed,
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestDigest:  types.RequestContentDigest(req),
+			Protocol:       "anthropic",
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			ToolCalls:      proposed,
 		}); applies && !decision.AllAllowed() {
 			rewriteResponseWithEnvelope(resp.ChatResponse, proposed, decision)
 		}
@@ -910,11 +913,14 @@ func (h *Handler) handleAnthropicStream(
 			lastFinishReason = "stop"
 		} else {
 			decision := h.hooks.ResponseAction(types.ResponseActionInput{
-				RequestID:     requestID,
-				PrincipalID:   keyIDFromInfo(keyInfo),
-				RequestDigest: types.RequestContentDigest(req),
-				Protocol:      "anthropic",
-				ToolCalls:     proposed,
+				RequestID:      requestID,
+				PrincipalID:    keyIDFromInfo(keyInfo),
+				RequestDigest:  types.RequestContentDigest(req),
+				Protocol:       "anthropic",
+				RoutedProvider: model.Provider,
+				RoutedModel:    model.ID,
+				Tier:           tier,
+				ToolCalls:      proposed,
 			})
 			if decision.AllAllowed() {
 				for _, c := range toolBuf.bufferedChunks {

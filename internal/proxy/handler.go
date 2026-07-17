@@ -345,11 +345,14 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	if h.hooks != nil && h.hooks.ResponseAction != nil && resp.ChatResponse != nil {
 		proposed := proposedToolCallsFromResponse(resp.ChatResponse)
 		if decision, applies := evaluateResponseAction(h.hooks.ResponseAction, types.ResponseActionInput{
-			RequestID:     requestID,
-			PrincipalID:   keyIDFromInfo(keyInfo),
-			RequestDigest: types.RequestContentDigest(&req),
-			Protocol:      "openai_chat",
-			ToolCalls:     proposed,
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestDigest:  types.RequestContentDigest(&req),
+			Protocol:       "openai_chat",
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			ToolCalls:      proposed,
 		}); applies && !decision.AllAllowed() {
 			rewriteResponseWithEnvelope(resp.ChatResponse, proposed, decision)
 		}

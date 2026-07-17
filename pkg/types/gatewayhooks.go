@@ -244,7 +244,13 @@ type ResponseActionInput struct {
 	PrincipalID   string
 	RequestDigest string
 	Protocol      string // "openai_chat" | "openai_responses" | "anthropic"
-	ToolCalls     []ProposedToolCall
+	// RoutedProvider / RoutedModel / Tier are the final route that produced the
+	// response, so the embedding product can bind a tool-action decision to the
+	// same route dimensions as its other policy decisions.
+	RoutedProvider string
+	RoutedModel    string
+	Tier           Tier
+	ToolCalls      []ProposedToolCall
 }
 
 // ResponseActionVerdict is the per-call decision.
