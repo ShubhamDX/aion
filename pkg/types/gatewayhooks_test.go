@@ -108,3 +108,89 @@ func TestRequestContentDigest_BindsMultimodalContent(t *testing.T) {
 		t.Fatal("different multimodal (image) content must change the digest")
 	}
 }
+
+// dec is a shorthand for a call decision.
+func dec(idx int, v ResponseActionVerdict) ResponseActionCallDecision {
+	return ResponseActionCallDecision{Index: idx, Verdict: v}
+}
+
+// TestResponseActionDecision_Validate covers the complete-mapping contract: the
+// decision must be exactly one in-range, unique, known-verdict decision per
+// proposed call. Every malformed shape must fail closed (Validate=false).
+func TestResponseActionDecision_Validate(t *testing.T) {
+	cases := []struct {
+		name     string
+		proposed int
+		decs     []ResponseActionCallDecision
+		want     bool
+	}{
+		{"empty decision over one call (missing) -> invalid",
+			1, nil, false},
+		{"empty over zero calls -> valid",
+			0, nil, true},
+		{"exact one-to-one allow -> valid",
+			2, []ResponseActionCallDecision{dec(0, ActionAllow), dec(1, ActionBlock)}, true},
+		{"too few decisions -> invalid",
+			2, []ResponseActionCallDecision{dec(0, ActionAllow)}, false},
+		{"too many decisions -> invalid",
+			1, []ResponseActionCallDecision{dec(0, ActionAllow), dec(1, ActionAllow)}, false},
+		{"duplicate index -> invalid",
+			2, []ResponseActionCallDecision{dec(0, ActionAllow), dec(0, ActionBlock)}, false},
+		{"negative index -> invalid",
+			2, []ResponseActionCallDecision{dec(-1, ActionAllow), dec(1, ActionAllow)}, false},
+		{"out-of-range index -> invalid",
+			2, []ResponseActionCallDecision{dec(0, ActionAllow), dec(2, ActionAllow)}, false},
+		{"unknown verdict -> invalid",
+			1, []ResponseActionCallDecision{{Index: 0, Verdict: ResponseActionVerdict(99)}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := ResponseActionDecision{Decisions: c.decs}
+			if got := d.Validate(c.proposed); got != c.want {
+				t.Fatalf("Validate(%d) = %v, want %v", c.proposed, got, c.want)
+			}
+		})
+	}
+}
+
+// TestResponseActionDecision_AllAllowedValidated: a malformed decision never
+// reports all-allowed (fail closed), and a valid all-allow does.
+func TestResponseActionDecision_AllAllowedValidated(t *testing.T) {
+	// One allow decision against a TWO-call response must NOT release (missing
+	// decision for the second call).
+	one := ResponseActionDecision{Decisions: []ResponseActionCallDecision{dec(0, ActionAllow)}}
+	if one.AllAllowedValidated(2) {
+		t.Fatal("one allow over two calls must fail closed")
+	}
+	// A complete all-allow releases.
+	full := ResponseActionDecision{Decisions: []ResponseActionCallDecision{dec(0, ActionAllow), dec(1, ActionAllow)}}
+	if !full.AllAllowedValidated(2) {
+		t.Fatal("complete all-allow must release")
+	}
+	// Empty decision over zero calls is vacuously all-allowed (but the caller only
+	// invokes the hook when there is >=1 call).
+	if !(ResponseActionDecision{}).AllAllowedValidated(0) {
+		t.Fatal("empty over zero calls should be all-allowed")
+	}
+}
+
+// TestResponseActionDecision_TopSeverityAction: block outranks hold outranks
+// allow, and a malformed decision fails closed to block.
+func TestResponseActionDecision_TopSeverityAction(t *testing.T) {
+	blockPlusHold := ResponseActionDecision{Decisions: []ResponseActionCallDecision{
+		dec(0, ActionBlock), dec(1, ActionHold),
+	}}
+	if got := blockPlusHold.TopSeverityAction(2); got != "block" {
+		t.Fatalf("block+hold top action = %q, want block", got)
+	}
+	holdPlusAllow := ResponseActionDecision{Decisions: []ResponseActionCallDecision{
+		dec(0, ActionHold), dec(1, ActionAllow),
+	}}
+	if got := holdPlusAllow.TopSeverityAction(2); got != "hold" {
+		t.Fatalf("hold+allow top action = %q, want hold", got)
+	}
+	// Malformed -> block.
+	if got := (ResponseActionDecision{}).TopSeverityAction(2); got != "block" {
+		t.Fatalf("malformed top action = %q, want block", got)
+	}
+}

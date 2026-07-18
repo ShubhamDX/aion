@@ -33,7 +33,10 @@ const (
 	ActionBlock = pkgtypes.ActionBlock
 	ActionHold  = pkgtypes.ActionHold
 
-	MaxBufferedToolCallArgsBytes = pkgtypes.MaxBufferedToolCallArgsBytes
+	MaxBufferedToolCallArgsBytes      = pkgtypes.MaxBufferedToolCallArgsBytes
+	MaxBufferedToolCallCount          = pkgtypes.MaxBufferedToolCallCount
+	MaxBufferedToolCallArgsTotalBytes = pkgtypes.MaxBufferedToolCallArgsTotalBytes
+	MaxBufferedStreamChunkBytes       = pkgtypes.MaxBufferedStreamChunkBytes
 
 	SessionSourceHeader  = pkgtypes.SessionSourceHeader
 	SessionSourceBody    = pkgtypes.SessionSourceBody

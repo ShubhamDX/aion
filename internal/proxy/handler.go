@@ -348,12 +348,15 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			RequestID:      requestID,
 			PrincipalID:    keyIDFromInfo(keyInfo),
 			RequestDigest:  types.RequestContentDigest(&req),
-			Protocol:       "openai_chat",
+			Protocol:       ingressProtocol(ctx),
 			RoutedProvider: selectedModel.Provider,
 			RoutedModel:    selectedModel.ID,
 			Tier:           tier,
 			ToolCalls:      proposed,
-		}); applies && !decision.AllAllowed() {
+		}); applies && !decision.AllAllowedValidated(len(proposed)) {
+			// Fail closed: any malformed decision (wrong cardinality, duplicate /
+			// missing / out-of-range index, unknown verdict) or any non-allow verdict
+			// rewrites to the envelope, so no unclassified tool call is released.
 			rewriteResponseWithEnvelope(resp.ChatResponse, proposed, decision)
 		}
 	}

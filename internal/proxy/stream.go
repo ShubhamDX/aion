@@ -68,16 +68,20 @@ func (h *Handler) handleStream(
 	var totalUsage types.Usage
 	streamComplete := false
 
-	// Response-action governance (optional): when installed, buffer tool-call
-	// fragments so a COMPLETE tool call is evaluated before any is released.
-	// Content-only and usage chunks still flush immediately, so ordinary
-	// inference streams unchanged; only the tool-call chunks are held. A nil hook
-	// keeps the original straight-through relay.
+	// Response-action governance (optional): when installed, the moment the FIRST
+	// tool-call fragment appears the proxy stops emitting and buffers EVERY
+	// subsequent chunk (text, usage, finish) in order through the terminal marker,
+	// so the protocol order is preserved and no finish chunk races ahead of the
+	// tool deltas. It evaluates the complete call set only after a clean EOF, then
+	// replays the original chunk sequence for an all-allowed result, or emits one
+	// ordinary completion for block/hold/overflow/error. A nil hook keeps the
+	// original straight-through relay.
 	governTools := h.hooks != nil && h.hooks.ResponseAction != nil
 	var toolBuf *streamToolBuffer
 	if governTools {
 		toolBuf = newStreamToolBuffer()
 	}
+	buffering := false // set once the first tool-call fragment is seen
 
 	writeChunk := func(chunk *types.ChatCompletionChunk) bool {
 		data, marshalErr := json.Marshal(chunk)
@@ -90,6 +94,7 @@ func (h *Handler) handleStream(
 		return true
 	}
 
+	readErr := false
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
@@ -97,7 +102,10 @@ func (h *Handler) handleStream(
 				streamComplete = true
 				break
 			}
+			// Non-EOF read error: never evaluate or replay partial calls. If we were
+			// already buffering a governed tool-call sequence, fail closed below.
 			slog.Error("stream read error", "error", err)
+			readErr = true
 			break
 		}
 
@@ -106,9 +114,14 @@ func (h *Handler) handleStream(
 			totalUsage.MergeFrom(*chunk.Usage)
 		}
 
-		// With governance on, hold any chunk carrying a tool-call delta until the
-		// full call set is evaluated; flush everything else immediately.
-		if governTools && chunkHasToolCall(chunk) {
+		// Enter buffering at the first tool-call fragment and stay there.
+		if governTools && !buffering && chunkHasToolCall(chunk) {
+			buffering = true
+		}
+
+		if buffering {
+			// Buffer the whole tail (tool deltas AND interleaved text/usage/finish)
+			// in arrival order; nothing is released until governance finishes.
 			toolBuf.add(chunk)
 			continue
 		}
@@ -118,34 +131,40 @@ func (h *Handler) handleStream(
 		}
 	}
 
-	// If governance buffered tool calls, evaluate the complete set now and either
-	// replay the buffered chunks (all allowed) or emit the action envelope.
-	if governTools && toolBuf.hasToolCalls() {
-		proposed, perr := toolBuf.proposed()
-		if perr != nil {
-			// Oversized/malformed buffered args: fail closed. Emit a block envelope
-			// with no per-call detail (we could not assemble the calls) so no tool
-			// call reaches the client.
-			writeChunk(envelopeChunk(model.ID, nil, types.ResponseActionDecision{ReasonCode: "tool_args_too_large"}))
-		} else {
-			decision := h.hooks.ResponseAction(types.ResponseActionInput{
-				RequestID:      requestID,
-				PrincipalID:    keyIDFromInfo(keyInfo),
-				RequestDigest:  types.RequestContentDigest(req),
-				Protocol:       "openai_chat",
-				RoutedProvider: model.Provider,
-				RoutedModel:    model.ID,
-				Tier:           tier,
-				ToolCalls:      proposed,
-			})
-			if decision.AllAllowed() {
-				for _, c := range toolBuf.bufferedChunks {
-					if !writeChunk(c) {
-						break
-					}
-				}
+	// If governance began buffering a tool-call sequence, resolve it now.
+	if governTools && buffering {
+		switch {
+		case readErr:
+			// Upstream failed mid-stream: the buffered calls may be incomplete. Fail
+			// closed with a forced block; release no buffered fragment.
+			writeChunk(failClosedEnvelopeChunk(model.ID, "upstream_stream_error"))
+		default:
+			proposed, perr := toolBuf.proposed()
+			if perr != nil {
+				// Overflowed a memory ceiling: fail closed, release nothing.
+				writeChunk(failClosedEnvelopeChunk(model.ID, "tool_args_too_large"))
 			} else {
-				writeChunk(envelopeChunk(model.ID, proposed, decision))
+				decision := h.hooks.ResponseAction(types.ResponseActionInput{
+					RequestID:      requestID,
+					PrincipalID:    keyIDFromInfo(keyInfo),
+					RequestDigest:  types.RequestContentDigest(req),
+					Protocol:       ingressProtocol(ctx),
+					RoutedProvider: model.Provider,
+					RoutedModel:    model.ID,
+					Tier:           tier,
+					ToolCalls:      proposed,
+				})
+				if decision.AllAllowedValidated(len(proposed)) {
+					// Replay the ORIGINAL buffered sequence verbatim, preserving order
+					// and any interleaved content.
+					for _, c := range toolBuf.bufferedChunks {
+						if !writeChunk(c) {
+							break
+						}
+					}
+				} else {
+					writeChunk(envelopeChunk(model.ID, proposed, decision))
+				}
 			}
 		}
 	}

@@ -45,21 +45,25 @@ type aionActionCallEntry struct {
 }
 
 // proposedToolCallsFromResponse extracts every complete tool call across all
-// choices of a non-streaming response, in stable index order.
+// choices of a non-streaming response, in stable index order. Index is the
+// response-wide 0..N-1 position; ChoiceIndex/CallIndex carry the provider-scoped
+// coordinates so an n>1 response keeps two choices' tool index 0 distinct.
 func proposedToolCallsFromResponse(resp *types.ChatCompletionResponse) []types.ProposedToolCall {
 	if resp == nil {
 		return nil
 	}
 	var out []types.ProposedToolCall
 	idx := 0
-	for _, choice := range resp.Choices {
-		for _, tc := range choice.Message.ToolCalls {
+	for ci, choice := range resp.Choices {
+		for cj, tc := range choice.Message.ToolCalls {
 			out = append(out, types.ProposedToolCall{
-				Index:      idx,
-				ID:         tc.ID,
-				Name:       tc.Function.Name,
-				Args:       tc.Function.Arguments,
-				ArgsDigest: types.ArgsDigestHex(tc.Function.Arguments),
+				Index:       idx,
+				ChoiceIndex: ci,
+				CallIndex:   cj,
+				ID:          tc.ID,
+				Name:        tc.Function.Name,
+				Args:        tc.Function.Arguments,
+				ArgsDigest:  types.ArgsDigestHex(tc.Function.Arguments),
 			})
 			idx++
 		}
@@ -78,24 +82,33 @@ func evaluateResponseAction(hook func(types.ResponseActionInput) types.ResponseA
 	return hook(in), true
 }
 
-// buildActionEnvelope builds the action envelope for a not-all-allowed decision.
-// The top-level action is "hold" if any call is held, else "block".
+// buildActionEnvelope builds the action envelope for a not-all-allowed (or
+// malformed) decision. The top-level action uses deterministic severity ordering
+// (block > hold > allow); a malformed decision fails closed to "block". Each
+// per-call entry reflects that call's own verdict; a call with no valid decision
+// is rendered "block" so the client never sees an unclassified call as allowed.
 func buildActionEnvelope(proposed []types.ProposedToolCall, decision types.ResponseActionDecision) aionActionEnvelope {
+	valid := decision.Validate(len(proposed))
 	byIndex := make(map[int]types.ResponseActionCallDecision, len(decision.Decisions))
-	for _, d := range decision.Decisions {
-		byIndex[d.Index] = d
+	if valid {
+		for _, d := range decision.Decisions {
+			byIndex[d.Index] = d
+		}
 	}
-	anyHold := false
 	entries := make([]aionActionCallEntry, 0, len(proposed))
 	for _, pc := range proposed {
-		d := byIndex[pc.Index]
-		action := "allow"
-		switch d.Verdict {
-		case types.ActionBlock:
-			action = "block"
-		case types.ActionHold:
-			action = "hold"
-			anyHold = true
+		d, ok := byIndex[pc.Index]
+		// Fail closed: any call without a valid decision is blocked, never allowed.
+		action := "block"
+		if ok {
+			switch d.Verdict {
+			case types.ActionAllow:
+				action = "allow"
+			case types.ActionHold:
+				action = "hold"
+			case types.ActionBlock:
+				action = "block"
+			}
 		}
 		entries = append(entries, aionActionCallEntry{
 			ToolName:    pc.Name,
@@ -106,12 +119,8 @@ func buildActionEnvelope(proposed []types.ProposedToolCall, decision types.Respo
 			PolicyClass: d.PolicyClass,
 		})
 	}
-	top := "block"
-	if anyHold {
-		top = "hold"
-	}
 	return aionActionEnvelope{AIONAction: aionActionBody{
-		Action:     top,
+		Action:     decision.TopSeverityAction(len(proposed)),
 		ReasonCode: decision.ReasonCode,
 		Calls:      entries,
 	}}
@@ -133,24 +142,50 @@ func envelopeContentJSON(env aionActionEnvelope) json.RawMessage {
 	return json.RawMessage(s)
 }
 
+// streamCallKey is the provider-scoped identity of one streaming tool call:
+// (choice.index, tool_call.index). Tool-call indices are scoped to a response
+// choice, so with n>1 two choices can both use tool index 0; keying by this pair
+// keeps them distinct instead of merging their names and arguments.
+type streamCallKey struct {
+	choice int
+	call   int
+}
+
+// streamCall is one assembled call plus the arrival order that fixes its stable
+// response-wide Index.
+type streamCall struct {
+	key streamCallKey
+	tc  types.ToolCall
+	seq int
+}
+
 // streamToolBuffer accumulates streaming tool-call fragments so a complete tool
 // call can be evaluated before any is released. It is used only when a
 // ResponseAction hook is installed; otherwise the stream passes through
 // unchanged. Content-only and usage chunks are never buffered here (the caller
 // flushes them immediately); this buffer holds only the chunks that carried a
 // tool-call delta, plus the assembled calls.
+//
+// Every retained dimension is bounded (per-call args, call count, aggregate args,
+// raw chunk bytes). The instant any ceiling is exceeded, overflow is set and the
+// buffer STOPS retaining new chunks and new argument bytes — the caller keeps
+// draining the upstream stream only to close it safely, and the whole response
+// fails closed to block.
 type streamToolBuffer struct {
-	byIndex map[int]*types.ToolCall
-	order   []int
+	byKey map[streamCallKey]*streamCall
+	order []streamCallKey
 	// bufferedChunks are the raw chunks that carried tool-call deltas, kept so an
 	// all-allowed decision can replay them verbatim (preserving provider ids,
 	// timing splits and any interleaved content in those chunks).
 	bufferedChunks []*types.ChatCompletionChunk
+	seq            int
+	argsTotal      int
+	chunkBytes     int
 	overflow       bool
 }
 
 func newStreamToolBuffer() *streamToolBuffer {
-	return &streamToolBuffer{byIndex: map[int]*types.ToolCall{}}
+	return &streamToolBuffer{byKey: map[streamCallKey]*streamCall{}}
 }
 
 // chunkHasToolCall reports whether a chunk carries any tool-call delta.
@@ -163,66 +198,126 @@ func chunkHasToolCall(chunk *types.ChatCompletionChunk) bool {
 	return false
 }
 
+// markOverflow trips the fail-closed flag and drops any already-retained chunks
+// so retained memory stops growing (and shrinks) once a ceiling is hit.
+func (b *streamToolBuffer) markOverflow() {
+	b.overflow = true
+	b.bufferedChunks = nil
+}
+
 // add accumulates a chunk's tool-call fragments and retains the chunk for
-// possible replay. It enforces the buffered-arguments ceiling per call.
+// possible replay, enforcing every memory ceiling. After overflow it retains
+// nothing further.
 func (b *streamToolBuffer) add(chunk *types.ChatCompletionChunk) {
+	if b.overflow {
+		return // stop retaining new data immediately after any limit is exceeded
+	}
+	// Bound retained raw chunk bytes (includes any interleaved content).
+	if data, err := json.Marshal(chunk); err == nil {
+		b.chunkBytes += len(data)
+		if b.chunkBytes > types.MaxBufferedStreamChunkBytes {
+			b.markOverflow()
+			return
+		}
+	}
 	b.bufferedChunks = append(b.bufferedChunks, chunk)
 	for _, choice := range chunk.Choices {
 		for _, tc := range choice.Delta.ToolCalls {
-			idx := 0
+			callIdx := 0
 			if tc.Index != nil {
-				idx = *tc.Index
+				callIdx = *tc.Index
 			}
-			cur := b.byIndex[idx]
+			key := streamCallKey{choice: choice.Index, call: callIdx}
+			cur := b.byKey[key]
 			if cur == nil {
-				cur = &types.ToolCall{Type: "function"}
-				b.byIndex[idx] = cur
-				b.order = append(b.order, idx)
+				if len(b.byKey) >= types.MaxBufferedToolCallCount {
+					b.markOverflow()
+					return
+				}
+				cur = &streamCall{key: key, tc: types.ToolCall{Type: "function"}, seq: b.seq}
+				b.seq++
+				b.byKey[key] = cur
+				b.order = append(b.order, key)
 			}
 			if tc.ID != "" {
-				cur.ID = tc.ID
+				cur.tc.ID = tc.ID
 			}
 			if tc.Function.Name != "" {
-				cur.Function.Name = tc.Function.Name
+				cur.tc.Function.Name = tc.Function.Name
 			}
-			cur.Function.Arguments += tc.Function.Arguments
-			if len(cur.Function.Arguments) > types.MaxBufferedToolCallArgsBytes {
-				b.overflow = true
+			frag := tc.Function.Arguments
+			cur.tc.Function.Arguments += frag
+			b.argsTotal += len(frag)
+			if len(cur.tc.Function.Arguments) > types.MaxBufferedToolCallArgsBytes ||
+				b.argsTotal > types.MaxBufferedToolCallArgsTotalBytes {
+				b.markOverflow()
+				return
 			}
 		}
 	}
 }
 
-// hasToolCalls reports whether any tool-call fragment was buffered.
-func (b *streamToolBuffer) hasToolCalls() bool { return len(b.order) > 0 }
+// hasToolCalls reports whether any tool-call fragment was buffered (or overflowed
+// while buffering tool calls). Overflow still counts so the caller fails closed.
+func (b *streamToolBuffer) hasToolCalls() bool { return len(b.order) > 0 || b.overflow }
 
-// proposed returns the assembled complete tool calls in arrival order, or an
-// error when the buffered arguments overflowed the ceiling.
+// proposed returns the assembled complete tool calls, or an error when any memory
+// ceiling overflowed. Calls are ordered by (choice.index, tool_call.index) and
+// numbered 0..N-1 in that stable order.
 func (b *streamToolBuffer) proposed() ([]types.ProposedToolCall, error) {
 	if b.overflow {
 		return nil, errToolArgsTooLarge
 	}
-	sorted := append([]int(nil), b.order...)
-	sort.Ints(sorted)
-	out := make([]types.ProposedToolCall, 0, len(sorted))
-	for i, idx := range sorted {
-		tc := b.byIndex[idx]
+	keys := append([]streamCallKey(nil), b.order...)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].choice != keys[j].choice {
+			return keys[i].choice < keys[j].choice
+		}
+		return keys[i].call < keys[j].call
+	})
+	out := make([]types.ProposedToolCall, 0, len(keys))
+	for i, key := range keys {
+		c := b.byKey[key]
 		out = append(out, types.ProposedToolCall{
-			Index:      i,
-			ID:         tc.ID,
-			Name:       tc.Function.Name,
-			Args:       tc.Function.Arguments,
-			ArgsDigest: types.ArgsDigestHex(tc.Function.Arguments),
+			Index:       i,
+			ChoiceIndex: key.choice,
+			CallIndex:   key.call,
+			ID:          c.tc.ID,
+			Name:        c.tc.Function.Name,
+			Args:        c.tc.Function.Arguments,
+			ArgsDigest:  types.ArgsDigestHex(c.tc.Function.Arguments),
 		})
 	}
 	return out, nil
 }
 
+// failClosedEnvelope is the forced-block envelope emitted when the proxy cannot
+// assemble or trust the proposed calls at all (overflow, upstream read error).
+// Its top-level action is always "block" regardless of any decision, so a client
+// never sees such a response as allowed.
+func failClosedEnvelope(reasonCode string) aionActionEnvelope {
+	return aionActionEnvelope{AIONAction: aionActionBody{
+		Action:     "block",
+		ReasonCode: reasonCode,
+		Calls:      []aionActionCallEntry{},
+	}}
+}
+
 // envelopeChunk builds a single streaming chunk carrying the action envelope as
 // ordinary assistant content with finish_reason "stop", to replace withheld tool
-// calls on a not-all-allowed (or overflow) decision.
+// calls on a not-all-allowed decision.
 func envelopeChunk(model string, proposed []types.ProposedToolCall, decision types.ResponseActionDecision) *types.ChatCompletionChunk {
-	content := string(rawStringUnquote(envelopeContentJSON(buildActionEnvelope(proposed, decision))))
+	return envelopeChunkFrom(model, buildActionEnvelope(proposed, decision))
+}
+
+// failClosedEnvelopeChunk builds the forced-block streaming chunk for the cases
+// where no trustworthy call set exists.
+func failClosedEnvelopeChunk(model, reasonCode string) *types.ChatCompletionChunk {
+	return envelopeChunkFrom(model, failClosedEnvelope(reasonCode))
+}
+
+func envelopeChunkFrom(model string, env aionActionEnvelope) *types.ChatCompletionChunk {
+	content := string(rawStringUnquote(envelopeContentJSON(env)))
 	stop := "stop"
 	return &types.ChatCompletionChunk{
 		Object: "chat.completion.chunk",

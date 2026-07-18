@@ -627,7 +627,8 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			RoutedModel:    selectedModel.ID,
 			Tier:           tier,
 			ToolCalls:      proposed,
-		}); applies && !decision.AllAllowed() {
+		}); applies && !decision.AllAllowedValidated(len(proposed)) {
+			// Fail closed on any malformed decision or non-allow verdict.
 			rewriteResponseWithEnvelope(resp.ChatResponse, proposed, decision)
 		}
 	}
@@ -858,13 +859,18 @@ func (h *Handler) handleAnthropicStream(
 	var lastFinishReason string
 	streamComplete := false
 
-	// Response-action governance (optional): when installed, hold tool-call chunks
-	// until the complete set is evaluated; text deltas stream unchanged.
+	// Response-action governance (optional): identical discipline to the OpenAI
+	// path. At the first tool-call fragment, buffer the whole tail (text, usage,
+	// finish and tool deltas) in order and release nothing until a clean EOF lets
+	// governance finish. Replay the original choices for all-allowed; emit one
+	// text-block envelope for block/hold/overflow/error.
 	governTools := h.hooks != nil && h.hooks.ResponseAction != nil
 	var toolBuf *streamToolBuffer
 	if governTools {
 		toolBuf = newStreamToolBuffer()
 	}
+	buffering := false
+	readErr := false
 
 	for {
 		chunk, err := stream.ReadChunk()
@@ -874,6 +880,7 @@ func (h *Handler) handleAnthropicStream(
 				break
 			}
 			slog.Error("stream read error", "error", err)
+			readErr = true
 			break
 		}
 
@@ -881,9 +888,13 @@ func (h *Handler) handleAnthropicStream(
 			totalUsage.MergeFrom(*chunk.Usage)
 		}
 
-		if governTools && chunkHasToolCall(chunk) {
+		if governTools && !buffering && chunkHasToolCall(chunk) {
+			buffering = true
+		}
+
+		if buffering {
 			toolBuf.add(chunk)
-			// Still capture a finish reason carried on a tool-call chunk.
+			// Capture a finish reason carried on any buffered chunk.
 			for _, choice := range chunk.Choices {
 				if choice.FinishReason != nil && *choice.FinishReason != "" {
 					lastFinishReason = *choice.FinishReason
@@ -903,38 +914,43 @@ func (h *Handler) handleAnthropicStream(
 		}
 	}
 
-	// Evaluate buffered tool calls (if any) and either replay them as tool_use
-	// blocks (all allowed) or emit the action envelope as a text block. No
-	// executable tool_use reaches the client on a block/hold.
-	if governTools && toolBuf.hasToolCalls() {
-		proposed, perr := toolBuf.proposed()
-		if perr != nil {
-			sseState.writeTextBlock(w, flusher, `{"aion_action":{"action":"block","reason_code":"tool_args_too_large","calls":[]}}`)
+	// Resolve a buffered tool-call sequence (if any). No executable tool_use
+	// reaches the client on block/hold/overflow/error.
+	if governTools && buffering {
+		switch {
+		case readErr:
+			sseState.writeTextBlock(w, flusher, `{"aion_action":{"action":"block","reason_code":"upstream_stream_error","calls":[]}}`)
 			lastFinishReason = "stop"
-		} else {
-			decision := h.hooks.ResponseAction(types.ResponseActionInput{
-				RequestID:      requestID,
-				PrincipalID:    keyIDFromInfo(keyInfo),
-				RequestDigest:  types.RequestContentDigest(req),
-				Protocol:       "anthropic",
-				RoutedProvider: model.Provider,
-				RoutedModel:    model.ID,
-				Tier:           tier,
-				ToolCalls:      proposed,
-			})
-			if decision.AllAllowed() {
-				for _, c := range toolBuf.bufferedChunks {
-					for _, choice := range c.Choices {
-						if choice.FinishReason != nil && *choice.FinishReason != "" {
-							continue
-						}
-						sseState.writeChoice(w, flusher, choice)
-					}
-				}
-			} else {
-				env := string(rawStringUnquote(envelopeContentJSON(buildActionEnvelope(proposed, decision))))
-				sseState.writeTextBlock(w, flusher, env)
+		default:
+			proposed, perr := toolBuf.proposed()
+			if perr != nil {
+				sseState.writeTextBlock(w, flusher, `{"aion_action":{"action":"block","reason_code":"tool_args_too_large","calls":[]}}`)
 				lastFinishReason = "stop"
+			} else {
+				decision := h.hooks.ResponseAction(types.ResponseActionInput{
+					RequestID:      requestID,
+					PrincipalID:    keyIDFromInfo(keyInfo),
+					RequestDigest:  types.RequestContentDigest(req),
+					Protocol:       protocolAnthropic,
+					RoutedProvider: model.Provider,
+					RoutedModel:    model.ID,
+					Tier:           tier,
+					ToolCalls:      proposed,
+				})
+				if decision.AllAllowedValidated(len(proposed)) {
+					for _, c := range toolBuf.bufferedChunks {
+						for _, choice := range c.Choices {
+							if choice.FinishReason != nil && *choice.FinishReason != "" {
+								continue
+							}
+							sseState.writeChoice(w, flusher, choice)
+						}
+					}
+				} else {
+					env := string(rawStringUnquote(envelopeContentJSON(buildActionEnvelope(proposed, decision))))
+					sseState.writeTextBlock(w, flusher, env)
+					lastFinishReason = "stop"
+				}
 			}
 		}
 	}
