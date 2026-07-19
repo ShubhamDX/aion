@@ -500,3 +500,170 @@ func TestStream_Anthropic_UpstreamErrorFailsClosed(t *testing.T) {
 		t.Fatalf("must fail closed with upstream_stream_error:\n%s", body)
 	}
 }
+
+// toolChunkNoIndex carries a tool-call fragment with a NIL index (the malformed
+// shape a provider stream can emit outside the gateway trust boundary).
+func toolChunkNoIndex(choiceIdx int, id, name, args string) *types.ChatCompletionChunk {
+	return &types.ChatCompletionChunk{Object: "chat.completion.chunk", Model: "gpt-cheap",
+		Choices: []types.ChunkChoice{{Index: choiceIdx, Delta: types.ChunkDelta{ToolCalls: []types.ToolCall{{
+			Index: nil, ID: id, Type: "function", Function: types.FunctionCall{Name: name, Arguments: args},
+		}}}}}}
+}
+
+// assertFailClosedNoReplay asserts no executable tool fragment / raw args reached
+// the client and the envelope failed closed to block with the given reason.
+func assertFailClosedNoReplay(t *testing.T, body, wantReason string, rawArgsSubstrings ...string) {
+	t.Helper()
+	if !strings.Contains(body, "aion_action") || !strings.Contains(body, `block`) {
+		t.Fatalf("must fail closed to a block envelope:\n%s", body)
+	}
+	if wantReason != "" && !strings.Contains(body, wantReason) {
+		t.Fatalf("must carry reason %q:\n%s", wantReason, body)
+	}
+	for _, raw := range rawArgsSubstrings {
+		if strings.Contains(body, raw) {
+			t.Fatalf("raw arguments leaked (%q):\n%s", raw, body)
+		}
+	}
+	for _, c := range sseChunks(t, body) {
+		for _, ch := range c.Choices {
+			if len(ch.Delta.ToolCalls) > 0 {
+				t.Fatalf("no executable tool fragment may be released on fail-closed:\n%s", body)
+			}
+		}
+	}
+}
+
+// F(identity): two DISTINCT same-choice calls that both omit tool_call.index must
+// NOT collapse into one decision; the buffer fails closed before the hook runs.
+func TestStream_OpenAIChat_MissingIndexFailsClosed(t *testing.T) {
+	chunks := []*types.ChatCompletionChunk{
+		toolChunkNoIndex(0, "c1", "alpha", `{"a":1}`),
+		toolChunkNoIndex(0, "c2", "beta", `{"b":2}`),
+		finishChunk("tool_calls"),
+	}
+	h := streamHandler(t, "openai", chunks, -1)
+	called := false
+	h.SetGatewayHooks(&types.GatewayHooks{ResponseAction: func(in types.ResponseActionInput) types.ResponseActionDecision {
+		called = true
+		return allowAll(in)
+	}})
+	body := doStream(t, h)
+	if called {
+		t.Fatal("hook must NOT run when a tool fragment has no valid index")
+	}
+	assertFailClosedNoReplay(t, body, "tool_call_identity_invalid", `{\"a\":1}`, `{\"b\":2}`)
+}
+
+// F(identity): a negative index also fails closed.
+func TestStream_OpenAIChat_NegativeIndexFailsClosed(t *testing.T) {
+	neg := -1
+	chunks := []*types.ChatCompletionChunk{
+		{Object: "chat.completion.chunk", Model: "gpt-cheap", Choices: []types.ChunkChoice{{Index: 0,
+			Delta: types.ChunkDelta{ToolCalls: []types.ToolCall{{Index: &neg, ID: "c1", Type: "function",
+				Function: types.FunctionCall{Name: "alpha", Arguments: `{"a":1}`}}}}}}},
+		finishChunk("tool_calls"),
+	}
+	h := streamHandler(t, "openai", chunks, -1)
+	called := false
+	h.SetGatewayHooks(&types.GatewayHooks{ResponseAction: func(in types.ResponseActionInput) types.ResponseActionDecision {
+		called = true
+		return allowAll(in)
+	}})
+	body := doStream(t, h)
+	if called {
+		t.Fatal("hook must NOT run on a negative tool-call index")
+	}
+	assertFailClosedNoReplay(t, body, "tool_call_identity_invalid", `{\"a\":1}`)
+}
+
+// F(identity): an established (choice,index) key whose non-empty call ID later
+// CHANGES to a conflicting value fails closed (the later value would otherwise
+// overwrite the earlier one, collapsing two calls).
+func TestStream_OpenAIChat_ConflictingIDFailsClosed(t *testing.T) {
+	chunks := []*types.ChatCompletionChunk{
+		toolChunk(0, 0, "id_first", "alpha", `{"a":`),
+		toolChunk(0, 0, "id_second", "alpha", `1}`), // same key, different ID
+		finishChunk("tool_calls"),
+	}
+	h := streamHandler(t, "openai", chunks, -1)
+	called := false
+	h.SetGatewayHooks(&types.GatewayHooks{ResponseAction: func(in types.ResponseActionInput) types.ResponseActionDecision {
+		called = true
+		return allowAll(in)
+	}})
+	body := doStream(t, h)
+	if called {
+		t.Fatal("hook must NOT run when a key's call ID changes")
+	}
+	assertFailClosedNoReplay(t, body, "tool_call_identity_conflict")
+}
+
+// F(identity): an established key whose non-empty function NAME changes fails
+// closed.
+func TestStream_OpenAIChat_ConflictingNameFailsClosed(t *testing.T) {
+	chunks := []*types.ChatCompletionChunk{
+		toolChunk(0, 0, "c1", "alpha", `{"a":`),
+		toolChunk(0, 0, "c1", "beta", `1}`), // same key, different name
+		finishChunk("tool_calls"),
+	}
+	h := streamHandler(t, "openai", chunks, -1)
+	called := false
+	h.SetGatewayHooks(&types.GatewayHooks{ResponseAction: func(in types.ResponseActionInput) types.ResponseActionDecision {
+		called = true
+		return allowAll(in)
+	}})
+	body := doStream(t, h)
+	if called {
+		t.Fatal("hook must NOT run when a key's function name changes")
+	}
+	assertFailClosedNoReplay(t, body, "tool_call_identity_conflict")
+}
+
+// F(identity): a benign REPEAT of the same ID/name on a key (common in provider
+// streams) must NOT fail closed — only conflicting non-empty values do.
+func TestStream_OpenAIChat_RepeatedSameIdentityAllowed(t *testing.T) {
+	chunks := []*types.ChatCompletionChunk{
+		toolChunk(0, 0, "c1", "alpha", `{"a":`),
+		toolChunk(0, 0, "c1", "alpha", `1}`), // same id + name repeated: fine
+		finishChunk("tool_calls"),
+	}
+	h := streamHandler(t, "openai", chunks, -1)
+	got := 0
+	h.SetGatewayHooks(&types.GatewayHooks{ResponseAction: func(in types.ResponseActionInput) types.ResponseActionDecision {
+		got = len(in.ToolCalls)
+		return allowAll(in)
+	}})
+	body := doStream(t, h)
+	if got != 1 {
+		t.Fatalf("repeated identical identity must assemble ONE call, got %d", got)
+	}
+	if !strings.Contains(body, "alpha") {
+		t.Fatalf("allowed call must be replayed:\n%s", body)
+	}
+}
+
+// F(identity): Anthropic ingress has the same fail-closed identity contract.
+func TestStream_Anthropic_MissingIndexFailsClosed(t *testing.T) {
+	chunks := []*types.ChatCompletionChunk{
+		toolChunkNoIndex(0, "toolu_1", "alpha", `{"a":1}`),
+		toolChunkNoIndex(0, "toolu_2", "beta", `{"b":2}`),
+		finishChunk("tool_calls"),
+	}
+	h := streamHandler(t, "bedrock", chunks, -1)
+	called := false
+	h.SetGatewayHooks(&types.GatewayHooks{ResponseAction: func(in types.ResponseActionInput) types.ResponseActionDecision {
+		called = true
+		return allowAll(in)
+	}})
+	body := doAnthropicStream(t, h, "claude-strong")
+	if called {
+		t.Fatal("anthropic: hook must NOT run when a tool fragment has no valid index")
+	}
+	if strings.Contains(body, `"type":"tool_use"`) {
+		t.Fatalf("anthropic: no tool_use may be replayed on fail-closed:\n%s", body)
+	}
+	if !strings.Contains(body, "tool_call_identity_invalid") {
+		t.Fatalf("anthropic: must fail closed with identity reason:\n%s", body)
+	}
+}

@@ -182,6 +182,10 @@ type streamToolBuffer struct {
 	argsTotal      int
 	chunkBytes     int
 	overflow       bool
+	// failReason records WHY the buffer failed closed (memory ceiling vs a
+	// malformed tool-call identity), surfaced as the envelope reason_code. The
+	// first failure wins.
+	failReason string
 }
 
 func newStreamToolBuffer() *streamToolBuffer {
@@ -198,19 +202,34 @@ func chunkHasToolCall(chunk *types.ChatCompletionChunk) bool {
 	return false
 }
 
-// markOverflow trips the fail-closed flag and drops any already-retained chunks
-// so retained memory stops growing (and shrinks) once a ceiling is hit.
-func (b *streamToolBuffer) markOverflow() {
+// failClosed trips the fail-closed flag with a reason and drops any
+// already-retained chunks so retained memory stops growing (and shrinks) once a
+// limit is hit or an identity is untrustworthy. The first reason wins.
+func (b *streamToolBuffer) failClosed(reason string) {
+	if b.failReason == "" {
+		b.failReason = reason
+	}
 	b.overflow = true
 	b.bufferedChunks = nil
 }
 
+// markOverflow is the memory-ceiling fail-closed.
+func (b *streamToolBuffer) markOverflow() { b.failClosed("tool_args_too_large") }
+
 // add accumulates a chunk's tool-call fragments and retains the chunk for
-// possible replay, enforcing every memory ceiling. After overflow it retains
-// nothing further.
+// possible replay, enforcing every memory ceiling and the tool-call identity
+// contract. After any failure it retains nothing further.
+//
+// Identity is fail-closed: a streaming tool fragment MUST carry a non-nil,
+// non-negative tool_call.index (the provider stream is outside the trust
+// boundary, so a missing index is not silently coerced to 0 — that would collapse
+// two distinct same-choice calls into one governance decision), and once a
+// (choice, index) key is established its non-empty ID and function name may not
+// change to a conflicting non-empty value. Either violation fails the whole
+// response closed to block before the hook runs.
 func (b *streamToolBuffer) add(chunk *types.ChatCompletionChunk) {
 	if b.overflow {
-		return // stop retaining new data immediately after any limit is exceeded
+		return // stop retaining new data immediately after any failure
 	}
 	// Bound retained raw chunk bytes (includes any interleaved content).
 	if data, err := json.Marshal(chunk); err == nil {
@@ -223,11 +242,14 @@ func (b *streamToolBuffer) add(chunk *types.ChatCompletionChunk) {
 	b.bufferedChunks = append(b.bufferedChunks, chunk)
 	for _, choice := range chunk.Choices {
 		for _, tc := range choice.Delta.ToolCalls {
-			callIdx := 0
-			if tc.Index != nil {
-				callIdx = *tc.Index
+			// Fail closed on an absent or negative tool-call index: without a valid
+			// index we cannot prove this fragment is a distinct call rather than a
+			// continuation of another, so we refuse rather than guess.
+			if tc.Index == nil || *tc.Index < 0 {
+				b.failClosed("tool_call_identity_invalid")
+				return
 			}
-			key := streamCallKey{choice: choice.Index, call: callIdx}
+			key := streamCallKey{choice: choice.Index, call: *tc.Index}
 			cur := b.byKey[key]
 			if cur == nil {
 				if len(b.byKey) >= types.MaxBufferedToolCallCount {
@@ -239,10 +261,21 @@ func (b *streamToolBuffer) add(chunk *types.ChatCompletionChunk) {
 				b.byKey[key] = cur
 				b.order = append(b.order, key)
 			}
+			// A non-empty ID or name that conflicts with the established value for
+			// this key means two different calls collided on one identity: fail
+			// closed rather than let the later value overwrite the earlier one.
 			if tc.ID != "" {
+				if cur.tc.ID != "" && cur.tc.ID != tc.ID {
+					b.failClosed("tool_call_identity_conflict")
+					return
+				}
 				cur.tc.ID = tc.ID
 			}
 			if tc.Function.Name != "" {
+				if cur.tc.Function.Name != "" && cur.tc.Function.Name != tc.Function.Name {
+					b.failClosed("tool_call_identity_conflict")
+					return
+				}
 				cur.tc.Function.Name = tc.Function.Name
 			}
 			frag := tc.Function.Arguments
@@ -261,9 +294,19 @@ func (b *streamToolBuffer) add(chunk *types.ChatCompletionChunk) {
 // while buffering tool calls). Overflow still counts so the caller fails closed.
 func (b *streamToolBuffer) hasToolCalls() bool { return len(b.order) > 0 || b.overflow }
 
-// proposed returns the assembled complete tool calls, or an error when any memory
-// ceiling overflowed. Calls are ordered by (choice.index, tool_call.index) and
-// numbered 0..N-1 in that stable order.
+// failedReasonCode returns the envelope reason_code for a failed-closed buffer,
+// defaulting to the memory-ceiling reason.
+func (b *streamToolBuffer) failedReasonCode() string {
+	if b.failReason != "" {
+		return b.failReason
+	}
+	return "tool_args_too_large"
+}
+
+// proposed returns the assembled complete tool calls, or an error when the buffer
+// failed closed (a memory ceiling or an invalid/conflicting tool-call identity).
+// Calls are ordered by (choice.index, tool_call.index) and numbered 0..N-1 in
+// that stable order.
 func (b *streamToolBuffer) proposed() ([]types.ProposedToolCall, error) {
 	if b.overflow {
 		return nil, errToolArgsTooLarge

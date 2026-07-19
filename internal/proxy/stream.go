@@ -141,8 +141,9 @@ func (h *Handler) handleStream(
 		default:
 			proposed, perr := toolBuf.proposed()
 			if perr != nil {
-				// Overflowed a memory ceiling: fail closed, release nothing.
-				writeChunk(failClosedEnvelopeChunk(model.ID, "tool_args_too_large"))
+				// Failed closed (memory ceiling or invalid/conflicting tool-call
+				// identity): release nothing, emit a forced block.
+				writeChunk(failClosedEnvelopeChunk(model.ID, toolBuf.failedReasonCode()))
 			} else {
 				decision := h.hooks.ResponseAction(types.ResponseActionInput{
 					RequestID:      requestID,

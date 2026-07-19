@@ -924,7 +924,7 @@ func (h *Handler) handleAnthropicStream(
 		default:
 			proposed, perr := toolBuf.proposed()
 			if perr != nil {
-				sseState.writeTextBlock(w, flusher, `{"aion_action":{"action":"block","reason_code":"tool_args_too_large","calls":[]}}`)
+				sseState.writeTextBlock(w, flusher, string(rawStringUnquote(envelopeContentJSON(failClosedEnvelope(toolBuf.failedReasonCode())))))
 				lastFinishReason = "stop"
 			} else {
 				decision := h.hooks.ResponseAction(types.ResponseActionInput{
