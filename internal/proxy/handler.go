@@ -336,6 +336,31 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
+	// Response-action governance (optional): normalize the complete proposed tool
+	// calls and ask the hook to allow/block/hold BEFORE releasing them. If not all
+	// are allowed, the response is rewritten to the action envelope so no
+	// executable tool call reaches the client. Runs synchronously, before the
+	// write, precisely because it can change the served bytes (unlike
+	// PostResponse). A nil hook leaves the response unchanged.
+	if h.hooks != nil && h.hooks.ResponseAction != nil && resp.ChatResponse != nil {
+		proposed := proposedToolCallsFromResponse(resp.ChatResponse)
+		if decision, applies := evaluateResponseAction(h.hooks.ResponseAction, types.ResponseActionInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestDigest:  types.RequestContentDigest(&req),
+			Protocol:       ingressProtocol(ctx),
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			ToolCalls:      proposed,
+		}); applies && !decision.AllAllowedValidated(len(proposed)) {
+			// Fail closed: any malformed decision (wrong cardinality, duplicate /
+			// missing / out-of-range index, unknown verdict) or any non-allow verdict
+			// rewrites to the envelope, so no unclassified tool call is released.
+			rewriteResponseWithEnvelope(resp.ChatResponse, proposed, decision)
+		}
+	}
+
 	// Write response FIRST, so the customer response is fully served before the
 	// post-response hook runs. The hook records signed evidence (and an embedding
 	// product may validate the response shape there); doing that work before the

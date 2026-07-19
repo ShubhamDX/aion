@@ -68,6 +68,33 @@ func (h *Handler) handleStream(
 	var totalUsage types.Usage
 	streamComplete := false
 
+	// Response-action governance (optional): when installed, the moment the FIRST
+	// tool-call fragment appears the proxy stops emitting and buffers EVERY
+	// subsequent chunk (text, usage, finish) in order through the terminal marker,
+	// so the protocol order is preserved and no finish chunk races ahead of the
+	// tool deltas. It evaluates the complete call set only after a clean EOF, then
+	// replays the original chunk sequence for an all-allowed result, or emits one
+	// ordinary completion for block/hold/overflow/error. A nil hook keeps the
+	// original straight-through relay.
+	governTools := h.hooks != nil && h.hooks.ResponseAction != nil
+	var toolBuf *streamToolBuffer
+	if governTools {
+		toolBuf = newStreamToolBuffer()
+	}
+	buffering := false // set once the first tool-call fragment is seen
+
+	writeChunk := func(chunk *types.ChatCompletionChunk) bool {
+		data, marshalErr := json.Marshal(chunk)
+		if marshalErr != nil {
+			slog.Error("stream marshal error", "error", marshalErr)
+			return false
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+		return true
+	}
+
+	readErr := false
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
@@ -75,7 +102,10 @@ func (h *Handler) handleStream(
 				streamComplete = true
 				break
 			}
+			// Non-EOF read error: never evaluate or replay partial calls. If we were
+			// already buffering a governed tool-call sequence, fail closed below.
 			slog.Error("stream read error", "error", err)
+			readErr = true
 			break
 		}
 
@@ -84,14 +114,60 @@ func (h *Handler) handleStream(
 			totalUsage.MergeFrom(*chunk.Usage)
 		}
 
-		data, marshalErr := json.Marshal(chunk)
-		if marshalErr != nil {
-			slog.Error("stream marshal error", "error", marshalErr)
-			break
+		// Enter buffering at the first tool-call fragment and stay there.
+		if governTools && !buffering && chunkHasToolCall(chunk) {
+			buffering = true
 		}
 
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		flusher.Flush()
+		if buffering {
+			// Buffer the whole tail (tool deltas AND interleaved text/usage/finish)
+			// in arrival order; nothing is released until governance finishes.
+			toolBuf.add(chunk)
+			continue
+		}
+
+		if !writeChunk(chunk) {
+			break
+		}
+	}
+
+	// If governance began buffering a tool-call sequence, resolve it now.
+	if governTools && buffering {
+		switch {
+		case readErr:
+			// Upstream failed mid-stream: the buffered calls may be incomplete. Fail
+			// closed with a forced block; release no buffered fragment.
+			writeChunk(failClosedEnvelopeChunk(model.ID, "upstream_stream_error"))
+		default:
+			proposed, perr := toolBuf.proposed()
+			if perr != nil {
+				// Failed closed (memory ceiling or invalid/conflicting tool-call
+				// identity): release nothing, emit a forced block.
+				writeChunk(failClosedEnvelopeChunk(model.ID, toolBuf.failedReasonCode()))
+			} else {
+				decision := h.hooks.ResponseAction(types.ResponseActionInput{
+					RequestID:      requestID,
+					PrincipalID:    keyIDFromInfo(keyInfo),
+					RequestDigest:  types.RequestContentDigest(req),
+					Protocol:       ingressProtocol(ctx),
+					RoutedProvider: model.Provider,
+					RoutedModel:    model.ID,
+					Tier:           tier,
+					ToolCalls:      proposed,
+				})
+				if decision.AllAllowedValidated(len(proposed)) {
+					// Replay the ORIGINAL buffered sequence verbatim, preserving order
+					// and any interleaved content.
+					for _, c := range toolBuf.bufferedChunks {
+						if !writeChunk(c) {
+							break
+						}
+					}
+				} else {
+					writeChunk(envelopeChunk(model.ID, proposed, decision))
+				}
+			}
+		}
 	}
 
 	// Terminate the SSE stream.

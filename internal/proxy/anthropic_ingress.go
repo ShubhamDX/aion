@@ -610,6 +610,29 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
+	// Response-action governance (optional): same contract as the OpenAI path.
+	// Normalize the complete proposed tool calls and allow/block/hold BEFORE the
+	// translate-and-write, so no blocked or held tool_use block reaches the
+	// client. On a not-all-allowed decision the response is rewritten to the
+	// action envelope, which translateOpenAIToAnthropic then renders as ordinary
+	// assistant text.
+	if h.hooks != nil && h.hooks.ResponseAction != nil && resp.ChatResponse != nil {
+		proposed := proposedToolCallsFromResponse(resp.ChatResponse)
+		if decision, applies := evaluateResponseAction(h.hooks.ResponseAction, types.ResponseActionInput{
+			RequestID:      requestID,
+			PrincipalID:    keyIDFromInfo(keyInfo),
+			RequestDigest:  types.RequestContentDigest(req),
+			Protocol:       "anthropic",
+			RoutedProvider: selectedModel.Provider,
+			RoutedModel:    selectedModel.ID,
+			Tier:           tier,
+			ToolCalls:      proposed,
+		}); applies && !decision.AllAllowedValidated(len(proposed)) {
+			// Fail closed on any malformed decision or non-allow verdict.
+			rewriteResponseWithEnvelope(resp.ChatResponse, proposed, decision)
+		}
+	}
+
 	// Write response FIRST (same ordering as the OpenAI path): the customer
 	// response is fully served before the post-response hook runs, so the hook's
 	// evidence recording / response-shape validation can never delay or block the
@@ -742,6 +765,29 @@ func (s *anthropicSSEState) writeChoice(w http.ResponseWriter, flusher http.Flus
 	}
 }
 
+// writeTextBlock emits a complete text content block carrying the given text,
+// used to render the action envelope in place of withheld tool_use blocks.
+func (s *anthropicSSEState) writeTextBlock(w http.ResponseWriter, flusher http.Flusher, text string) {
+	s.closeBlock(w, flusher)
+	writeSSEEvent(w, flusher, "content_block_start", map[string]interface{}{
+		"type":  "content_block_start",
+		"index": s.blockIndex,
+		"content_block": map[string]interface{}{
+			"type": "text",
+			"text": "",
+		},
+	})
+	s.blockOpen = true
+	writeSSEEvent(w, flusher, "content_block_delta", map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": s.blockIndex,
+		"delta": map[string]interface{}{
+			"type": "text_delta",
+			"text": text,
+		},
+	})
+}
+
 // handleAnthropicStream reads OpenAI SSE chunks from a provider and emits
 // Anthropic-format SSE events to the client.
 func (h *Handler) handleAnthropicStream(
@@ -813,6 +859,19 @@ func (h *Handler) handleAnthropicStream(
 	var lastFinishReason string
 	streamComplete := false
 
+	// Response-action governance (optional): identical discipline to the OpenAI
+	// path. At the first tool-call fragment, buffer the whole tail (text, usage,
+	// finish and tool deltas) in order and release nothing until a clean EOF lets
+	// governance finish. Replay the original choices for all-allowed; emit one
+	// text-block envelope for block/hold/overflow/error.
+	governTools := h.hooks != nil && h.hooks.ResponseAction != nil
+	var toolBuf *streamToolBuffer
+	if governTools {
+		toolBuf = newStreamToolBuffer()
+	}
+	buffering := false
+	readErr := false
+
 	for {
 		chunk, err := stream.ReadChunk()
 		if err != nil {
@@ -821,11 +880,27 @@ func (h *Handler) handleAnthropicStream(
 				break
 			}
 			slog.Error("stream read error", "error", err)
+			readErr = true
 			break
 		}
 
 		if chunk.Usage != nil {
 			totalUsage.MergeFrom(*chunk.Usage)
+		}
+
+		if governTools && !buffering && chunkHasToolCall(chunk) {
+			buffering = true
+		}
+
+		if buffering {
+			toolBuf.add(chunk)
+			// Capture a finish reason carried on any buffered chunk.
+			for _, choice := range chunk.Choices {
+				if choice.FinishReason != nil && *choice.FinishReason != "" {
+					lastFinishReason = *choice.FinishReason
+				}
+			}
+			continue
 		}
 
 		for _, choice := range chunk.Choices {
@@ -836,6 +911,47 @@ func (h *Handler) handleAnthropicStream(
 			}
 
 			sseState.writeChoice(w, flusher, choice)
+		}
+	}
+
+	// Resolve a buffered tool-call sequence (if any). No executable tool_use
+	// reaches the client on block/hold/overflow/error.
+	if governTools && buffering {
+		switch {
+		case readErr:
+			sseState.writeTextBlock(w, flusher, `{"aion_action":{"action":"block","reason_code":"upstream_stream_error","calls":[]}}`)
+			lastFinishReason = "stop"
+		default:
+			proposed, perr := toolBuf.proposed()
+			if perr != nil {
+				sseState.writeTextBlock(w, flusher, string(rawStringUnquote(envelopeContentJSON(failClosedEnvelope(toolBuf.failedReasonCode())))))
+				lastFinishReason = "stop"
+			} else {
+				decision := h.hooks.ResponseAction(types.ResponseActionInput{
+					RequestID:      requestID,
+					PrincipalID:    keyIDFromInfo(keyInfo),
+					RequestDigest:  types.RequestContentDigest(req),
+					Protocol:       protocolAnthropic,
+					RoutedProvider: model.Provider,
+					RoutedModel:    model.ID,
+					Tier:           tier,
+					ToolCalls:      proposed,
+				})
+				if decision.AllAllowedValidated(len(proposed)) {
+					for _, c := range toolBuf.bufferedChunks {
+						for _, choice := range c.Choices {
+							if choice.FinishReason != nil && *choice.FinishReason != "" {
+								continue
+							}
+							sseState.writeChoice(w, flusher, choice)
+						}
+					}
+				} else {
+					env := string(rawStringUnquote(envelopeContentJSON(buildActionEnvelope(proposed, decision))))
+					sseState.writeTextBlock(w, flusher, env)
+					lastFinishReason = "stop"
+				}
+			}
 		}
 	}
 

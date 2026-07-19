@@ -93,7 +93,9 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r2 := r.Clone(r.Context())
+	// Carry the TRUE ingress protocol through the shared lifecycle so the
+	// ResponseAction hook is told "openai_responses", not the native "openai_chat".
+	r2 := r.Clone(withIngressProtocol(r.Context(), protocolOpenAIResponses))
 	r2.Body = io.NopCloser(bytes.NewReader(body))
 	r2.ContentLength = int64(len(body))
 	if req.Stream {

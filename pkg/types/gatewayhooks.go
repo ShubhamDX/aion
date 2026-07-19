@@ -168,6 +168,26 @@ type GatewayHooks struct {
 	// the request unchanged. The hook is for output-token controls such as a fixed
 	// style envelope; the proxy never logs or persists the request body.
 	ApplyOutputControl func(OutputControlInput) *OutputControlResult
+	// ResponseAction is an optional response-boundary seam. When installed, the
+	// proxy normalizes every COMPLETE model-proposed tool call in a response
+	// (buffering streaming tool-call fragments to completion first) and calls this
+	// hook ONCE per response with all proposed calls, BEFORE releasing any tool
+	// call to the client. The embedding product returns exactly one allow/block/hold
+	// decision per proposed call; the proxy validates the decision is a complete,
+	// unique, in-range mapping over the proposed calls and fails closed to block on
+	// any malformed result. It releases the response unchanged only when every call
+	// is allowed, and otherwise replaces the tool calls with a protocol-valid
+	// completion carrying the action envelope (no executable tool call reaches the
+	// client). A nil hook leaves the OSS response bytes unchanged.
+	//
+	// Data contract: the hook receives each call's RAW arguments (ProposedToolCall.Args)
+	// IN PROCESS ONLY so the embedding product can classify them (e.g.
+	// destructive-action detection), plus a per-call sha256 arguments digest
+	// (ArgsDigest) it records as evidence. The proxy never puts raw arguments in
+	// logs, the aion_action envelope or any persisted/signed evidence — only the
+	// digest. No provider credentials reach the hook. OSS defines the seam and the
+	// envelope shape; it does not define policy.
+	ResponseAction func(ResponseActionInput) ResponseActionDecision
 }
 
 // ContextCompressionResult is the optional replacement the ApplyContextCompression
@@ -198,6 +218,187 @@ type OutputControlResult struct {
 	Messages  []Message
 	MaxTokens *int
 	Applied   bool
+}
+
+// Streaming governance memory ceilings. When the ResponseAction hook is enabled
+// the proxy buffers streaming tool-call fragments to completion before releasing
+// any. A hostile or runaway provider stream must not be able to grow retained
+// memory without bound, so every retained dimension is capped and the buffer
+// stops retaining new data the instant any ceiling is exceeded, failing closed to
+// block. Non-streaming responses are already bounded by the provider read limits.
+const (
+	// MaxBufferedToolCallArgsBytes is the ceiling on a SINGLE streaming tool
+	// call's accumulated arguments.
+	MaxBufferedToolCallArgsBytes = 256 * 1024
+	// MaxBufferedToolCallCount is the ceiling on the number of distinct proposed
+	// tool calls retained across all choices of one streaming response.
+	MaxBufferedToolCallCount = 256
+	// MaxBufferedToolCallArgsTotalBytes is the ceiling on the AGGREGATE arguments
+	// bytes across every buffered tool call.
+	MaxBufferedToolCallArgsTotalBytes = 1024 * 1024
+	// MaxBufferedStreamChunkBytes is the ceiling on the total retained raw chunk
+	// bytes (marshaled), including any interleaved content in buffered chunks.
+	MaxBufferedStreamChunkBytes = 4 * 1024 * 1024
+)
+
+// ProposedToolCall is one complete model-proposed tool call handed to the
+// ResponseAction hook. Args is the raw arguments JSON string handed to the hook
+// IN PROCESS ONLY so the embedding product can classify (e.g. destructive-action
+// detection); ArgsDigest is the sha256-hex the product records as evidence (raw
+// Args never enter logs, the envelope or persisted evidence).
+//
+// Index is the call's stable, response-wide position: proposed calls are numbered
+// 0..N-1 in a deterministic order (choice order, then tool-call order within a
+// choice), so the hook returns exactly one decision per Index. ChoiceIndex and
+// CallIndex are the provider-scoped coordinates that produced this call
+// (choice.index, tool_call.index); they disambiguate n>1 responses where two
+// choices can both use tool index 0. ID is the provider call id.
+type ProposedToolCall struct {
+	Index       int
+	ChoiceIndex int
+	CallIndex   int
+	ID          string
+	Name        string
+	Args        string
+	ArgsDigest  string
+}
+
+// ResponseActionInput is the complete set of proposed tool calls for one
+// response, handed to the ResponseAction hook before any is released. It carries
+// no provider credentials and no prompt/response text beyond the tool calls the
+// client would otherwise execute.
+type ResponseActionInput struct {
+	RequestID     string
+	PrincipalID   string
+	RequestDigest string
+	Protocol      string // "openai_chat" | "openai_responses" | "anthropic"
+	// RoutedProvider / RoutedModel / Tier are the final route that produced the
+	// response, so the embedding product can bind a tool-action decision to the
+	// same route dimensions as its other policy decisions.
+	RoutedProvider string
+	RoutedModel    string
+	Tier           Tier
+	ToolCalls      []ProposedToolCall
+}
+
+// ResponseActionVerdict is the per-call decision.
+type ResponseActionVerdict int
+
+const (
+	// ActionAllow releases the tool call to the client unchanged.
+	ActionAllow ResponseActionVerdict = iota
+	// ActionBlock refuses the tool call: it never reaches the client.
+	ActionBlock
+	// ActionHold withholds the tool call pending human approval: it never reaches
+	// the client as an executable proposal.
+	ActionHold
+)
+
+// ResponseActionCallDecision is the decision for one proposed tool call. HoldID
+// is a durable identifier the embedding product assigns for a held call so the
+// client and operator can correlate the approval; empty for allow/block.
+type ResponseActionCallDecision struct {
+	Index       int
+	Verdict     ResponseActionVerdict
+	PolicyClass string
+	HoldID      string
+}
+
+// ResponseActionDecision is the hook result: one decision per proposed call. The
+// proxy releases the response unchanged only when the decision is a complete,
+// valid mapping in which every call is allowed. If any call is blocked or held,
+// or the decision is malformed, NO tool call is released; the proxy emits the
+// action envelope instead (all-or-nothing, so a client never receives half an
+// executable plan). ReasonCode is surfaced for audit.
+type ResponseActionDecision struct {
+	Decisions  []ResponseActionCallDecision
+	ReasonCode string
+}
+
+// Validate checks that the decision is a COMPLETE mapping over the proposed
+// calls: exactly one in-range decision per call, no duplicate / missing /
+// negative / out-of-range index, and only known verdict values. It returns false
+// for any malformed result (including a nil/empty decision set against a non-empty
+// call set), so the caller fails closed to block. proposedCount is len(proposed).
+func (d ResponseActionDecision) Validate(proposedCount int) bool {
+	if proposedCount < 0 {
+		return false
+	}
+	// Exact cardinality: one decision per proposed call.
+	if len(d.Decisions) != proposedCount {
+		return false
+	}
+	seen := make([]bool, proposedCount)
+	for _, dec := range d.Decisions {
+		if dec.Index < 0 || dec.Index >= proposedCount {
+			return false // negative or out-of-range index
+		}
+		if seen[dec.Index] {
+			return false // duplicate index
+		}
+		seen[dec.Index] = true
+		switch dec.Verdict {
+		case ActionAllow, ActionBlock, ActionHold:
+			// known verdict
+		default:
+			return false // unknown verdict
+		}
+	}
+	// Every index present is guaranteed by exact cardinality + uniqueness +
+	// in-range, but assert explicitly for clarity.
+	for _, ok := range seen {
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// AllAllowedValidated reports whether the decision is a valid complete mapping AND
+// every verdict is ActionAllow. It is the ONLY gate the proxy uses to release a
+// response unchanged: a malformed decision returns false (fail closed to block),
+// never releasing an unclassified call.
+func (d ResponseActionDecision) AllAllowedValidated(proposedCount int) bool {
+	if !d.Validate(proposedCount) {
+		return false
+	}
+	for _, dec := range d.Decisions {
+		if dec.Verdict != ActionAllow {
+			return false
+		}
+	}
+	return true
+}
+
+// TopSeverityAction returns the deterministic top-level envelope action for a
+// not-all-allowed decision, using severity ordering block > hold > allow: if any
+// call is blocked the plan is "block", else if any is held it is "hold", else
+// "allow". A malformed decision (any missing/unknown verdict for a proposed call)
+// is treated as "block" (fail closed). proposedCount bounds the indices.
+func (d ResponseActionDecision) TopSeverityAction(proposedCount int) string {
+	if !d.Validate(proposedCount) {
+		return "block"
+	}
+	anyHold := false
+	for _, dec := range d.Decisions {
+		switch dec.Verdict {
+		case ActionBlock:
+			return "block"
+		case ActionHold:
+			anyHold = true
+		}
+	}
+	if anyHold {
+		return "hold"
+	}
+	return "allow"
+}
+
+// ArgsDigestHex returns the sha256-hex of a tool call's raw arguments string, the
+// digest the ResponseAction hook records instead of the raw arguments.
+func ArgsDigestHex(args string) string {
+	sum := sha256.Sum256([]byte(args))
+	return hex.EncodeToString(sum[:])
 }
 
 // PostRouteInput is the final-route view handed to ResolveSchemaSettings. The
