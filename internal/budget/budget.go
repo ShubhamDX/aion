@@ -46,14 +46,18 @@ func (e *ExceededError) Error() string {
 	)
 }
 
-// CustomerMessage renders the block in plain language for an end user: usage,
-// limit and reset time, without the internal reservation bookkeeping in
-// Error(). Use this for any response the calling client or its user will see;
-// keep Error() for logs.
+// CustomerMessage renders the block in plain language for an end user: why it
+// blocked (this request's projected total, not just past usage), the limit
+// and the reset time, without the internal "reserved" bookkeeping term from
+// Error(). Naming Used alone reads as an arbitrary early cutoff, since Used
+// is always below Limit whenever a block fires (that is what makes it a
+// projection, not a completed overspend); showing the projected total makes
+// clear the block is at the limit, not before it. Use this for any response
+// the calling client or its user will see; keep Error() for logs.
 func (e *ExceededError) CustomerMessage() string {
 	return fmt.Sprintf(
-		"This key has used $%.2f of its $%.2f %s limit. Resets %s.",
-		e.Used, e.Limit, e.Scope, e.ResetAt.Format("2006-01-02 15:04 MST"),
+		"This request would bring %s spend to $%.2f, over the $%.2f limit. Resets %s.",
+		e.Scope, e.Used+e.Estimate, e.Limit, e.ResetAt.Format("2006-01-02 15:04 MST"),
 	)
 }
 
