@@ -2,8 +2,15 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/ShubhamDX/aion/internal/budget"
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/pricing"
 	"github.com/ShubhamDX/aion/internal/router"
@@ -127,4 +134,64 @@ func mkContent(n int) json.RawMessage {
 	}
 	b[n+1] = '"'
 	return json.RawMessage(b)
+}
+
+// writeBudgetError is what actually reaches the client on a budget block; this
+// verifies the real HTTP output (status, headers, JSON body), not just the
+// ExceededError string formatting in the budget package.
+func TestWriteBudgetErrorSetsRetryAfterAndCustomerMessage(t *testing.T) {
+	exceeded := &budget.ExceededError{
+		Scope: "monthly", Used: 3.7708, Estimate: 1.2798, Limit: 5,
+		ResetAt: time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second),
+	}
+	w := httptest.NewRecorder()
+	writeBudgetError(w, exceeded)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+	wantRetryAfter := strconv.Itoa(int(time.Until(exceeded.ResetAt).Round(time.Second).Seconds()))
+	if got := w.Header().Get("Retry-After"); got != wantRetryAfter {
+		t.Fatalf("Retry-After = %q, want %q", got, wantRetryAfter)
+	}
+	if got, want := w.Header().Get("X-AION-Budget-Reset"), exceeded.ResetAt.Format(time.RFC3339); got != want {
+		t.Fatalf("X-AION-Budget-Reset = %q, want %q", got, want)
+	}
+	var body types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v (%s)", err, w.Body.String())
+	}
+	if body.Error.Type != "budget_exceeded" {
+		t.Fatalf("error.type = %q, want %q", body.Error.Type, "budget_exceeded")
+	}
+	if strings.Contains(body.Error.Message, "reserved") {
+		t.Fatalf("error.message %q still leaks internal reservation jargon", body.Error.Message)
+	}
+	if got, want := body.Error.Message, exceeded.CustomerMessage(); got != want {
+		t.Fatalf("error.message = %q, want %q", got, want)
+	}
+	t.Logf("actual 429 response: status=%d Retry-After=%s X-AION-Budget-Reset=%s body=%s",
+		w.Code, w.Header().Get("Retry-After"), w.Header().Get("X-AION-Budget-Reset"), w.Body.String())
+}
+
+// A non-ExceededError (a storage failure, not an over-budget request) still
+// renders as a 429 but without the retry/reset headers, since there is no
+// reset time to report.
+func TestWriteBudgetErrorFallsBackForNonExceededError(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeBudgetError(w, fmt.Errorf("budget: reserve usage: storage unavailable"))
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+	if got := w.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q, want empty for a non-budget-exceeded error", got)
+	}
+	var body types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v (%s)", err, w.Body.String())
+	}
+	if body.Error.Message != "budget: reserve usage: storage unavailable" {
+		t.Fatalf("error.message = %q, want the raw storage error", body.Error.Message)
+	}
 }
