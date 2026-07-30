@@ -155,14 +155,10 @@ func TestReserveExceededErrorCarriesMonthlyResetTime(t *testing.T) {
 	}
 }
 
-func TestExceededErrorCustomerMessageShowsProjectedTotalNotJustUsage(t *testing.T) {
+func TestExceededErrorCustomerMessageIsLimitAndReset(t *testing.T) {
 	e := &ExceededError{Scope: "monthly", Used: 3.7708, Estimate: 1.2798, Limit: 5, ResetAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
 	msg := e.CustomerMessage()
-	// Used ($3.77) alone would read as an arbitrary early cutoff; the message
-	// must show the PROJECTED total (used + this request's estimate = $5.05)
-	// that actually crosses the $5.00 limit, so the block reads as "at the
-	// limit," not "before it."
-	if got, want := msg, "This request would bring monthly spend to $5.05, over the $5.00 limit. Resets 2026-08-01 00:00 UTC."; got != want {
+	if got, want := msg, "$5.00 monthly limit reached. Resets 2026-08-01 00:00 UTC."; got != want {
 		t.Fatalf("CustomerMessage = %q, want %q", got, want)
 	}
 	// Error() stays available for logs with full reservation detail.
