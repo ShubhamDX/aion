@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -155,14 +156,28 @@ func TestReserveExceededErrorCarriesMonthlyResetTime(t *testing.T) {
 	}
 }
 
-func TestExceededErrorCustomerMessageIsLimitAndReset(t *testing.T) {
+func TestExceededErrorCustomerMessageHasNoDollarAmount(t *testing.T) {
 	e := &ExceededError{Scope: "monthly", Used: 3.7708, Estimate: 1.2798, Limit: 5, ResetAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
 	msg := e.CustomerMessage()
-	if got, want := msg, "$5.00 monthly limit reached. Resets 2026-08-01 00:00 UTC."; got != want {
+	if got, want := msg, "monthly usage limit reached. Resets 2026-08-01 00:00 UTC."; got != want {
 		t.Fatalf("CustomerMessage = %q, want %q", got, want)
+	}
+	if strings.Contains(msg, "$") {
+		t.Fatalf("CustomerMessage = %q, must not name a dollar amount", msg)
 	}
 	// Error() stays available for logs with full reservation detail.
 	if e.Error() == msg {
 		t.Fatalf("Error() and CustomerMessage() should differ (log detail vs customer-facing text)")
+	}
+}
+
+func TestExceededErrorCustomerMessageNamesTheScopeThatWasHit(t *testing.T) {
+	daily := &ExceededError{Scope: "daily", Limit: 3, ResetAt: time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)}
+	if got, want := daily.CustomerMessage(), "daily usage limit reached. Resets 2026-07-31 00:00 UTC."; got != want {
+		t.Fatalf("CustomerMessage = %q, want %q", got, want)
+	}
+	monthly := &ExceededError{Scope: "monthly", Limit: 90, ResetAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	if got, want := monthly.CustomerMessage(), "monthly usage limit reached. Resets 2026-08-01 00:00 UTC."; got != want {
+		t.Fatalf("CustomerMessage = %q, want %q", got, want)
 	}
 }
