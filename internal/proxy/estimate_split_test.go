@@ -49,7 +49,11 @@ func TestEstimatedCostIsCacheBlind(t *testing.T) {
 	}
 }
 
-func TestEstimatedCostUsesConfiguredOutputCapWhenRequestOmitsIt(t *testing.T) {
+// When the request omits max_tokens, the reservation uses a realistic
+// multiple of the prompt (defaultOutputTokenRatio), not the model's full
+// output ceiling: assuming the ceiling on every request reserves far more
+// budget headroom than most turns use.
+func TestEstimatedCostUsesRatioHeuristicWhenRequestOmitsMaxTokens(t *testing.T) {
 	h := cachedModelHandler()
 	model, _ := h.router.FindModel("sonnet")
 	req := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: mkContent(20)}}}
@@ -57,9 +61,35 @@ func TestEstimatedCostUsesConfiguredOutputCapWhenRequestOmitsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	want := h.pricing.EstimateCost("sonnet", len(payload)+64*len(req.Messages)+256, 4096)
+	promptTokens := len(payload) + 64*len(req.Messages) + 256
+	wantOutTokens := int(float64(promptTokens) * defaultOutputTokenRatio)
+	if wantOutTokens >= model.MaxTokens {
+		t.Fatalf("test fixture must keep the ratio estimate (%d) below the model cap (%d) to exercise the uncapped path", wantOutTokens, model.MaxTokens)
+	}
+	want := h.pricing.EstimateCost("sonnet", promptTokens, wantOutTokens)
 	if got := h.estimatedCost(req, model); got != want {
-		t.Fatalf("estimatedCost = %.10f, want configured-cap estimate %.10f", got, want)
+		t.Fatalf("estimatedCost = %.10f, want ratio-heuristic estimate %.10f", got, want)
+	}
+}
+
+// A large enough prompt pushes the ratio heuristic past the model's
+// configured output cap; the reservation must clamp to the cap rather than
+// reserve more than the model can ever emit.
+func TestEstimatedCostClampsRatioEstimateToModelMaxTokens(t *testing.T) {
+	h := cachedModelHandler()
+	model, _ := h.router.FindModel("sonnet")
+	req := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: mkContent(6000)}}}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	promptTokens := len(payload) + 64*len(req.Messages) + 256
+	if int(float64(promptTokens)*defaultOutputTokenRatio) <= model.MaxTokens {
+		t.Fatalf("test fixture must push the ratio estimate above the model cap (%d) to exercise the clamp", model.MaxTokens)
+	}
+	want := h.pricing.EstimateCost("sonnet", promptTokens, model.MaxTokens)
+	if got := h.estimatedCost(req, model); got != want {
+		t.Fatalf("estimatedCost = %.10f, want cap-clamped estimate %.10f", got, want)
 	}
 }
 
