@@ -590,14 +590,20 @@ func writeError(w http.ResponseWriter, status int, errType, message string) {
 	})
 }
 
-// writeBudgetError renders a budget.Reserve failure as a 429. When err is a
-// *budget.ExceededError it sets Retry-After to the seconds remaining until
-// the window resets and X-AION-Budget-Reset to the reset time, so a
-// well-behaved client stops retrying before the window can possibly move,
-// instead of burning attempts against a limit that will not change until
-// then. The body message is the plain-language CustomerMessage, not the
-// internal reservation bookkeeping. Any other error (a storage failure, not
-// an over-budget request) falls back to a plain 429 with its own message.
+// writeBudgetError renders a budget.Reserve failure as HTTP 402 Payment
+// Required, not 429. A budget block is not a rate limit: the anthropic
+// ingress path already uses 429 for genuine per-second throttling
+// (rate_limit_error), and a client cannot tell "retry me shortly" from
+// "do not retry for hours" by status code alone if both share 429. 402 also
+// falls outside the retryable-status set most OpenAI/Anthropic-compatible
+// SDKs auto-retry, so it stops a blind retry loop even for a client that
+// ignores Retry-After.
+//
+// When err is a *budget.ExceededError it sets Retry-After to the seconds
+// remaining until the window resets and X-AION-Budget-Reset to the reset
+// time, and the body is the plain-language CustomerMessage, not the internal
+// reservation bookkeeping. Any other error (a storage failure, not an
+// over-budget request) falls back to a plain 402 with its own message.
 func writeBudgetError(w http.ResponseWriter, err error) {
 	var exceeded *budget.ExceededError
 	if errors.As(err, &exceeded) {
@@ -607,10 +613,10 @@ func writeBudgetError(w http.ResponseWriter, err error) {
 		}
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		w.Header().Set("X-AION-Budget-Reset", exceeded.ResetAt.Format(time.RFC3339))
-		writeError(w, http.StatusTooManyRequests, "budget_exceeded", exceeded.CustomerMessage())
+		writeError(w, http.StatusPaymentRequired, "budget_exceeded", exceeded.CustomerMessage())
 		return
 	}
-	writeError(w, http.StatusTooManyRequests, "budget_exceeded", err.Error())
+	writeError(w, http.StatusPaymentRequired, "budget_exceeded", err.Error())
 }
 
 // keyIDFromInfo returns a stable identifier for telemetry. Returns "anonymous"

@@ -147,8 +147,8 @@ func TestWriteBudgetErrorSetsRetryAfterAndCustomerMessage(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeBudgetError(w, exceeded)
 
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusPaymentRequired)
 	}
 	wantRetryAfter := strconv.Itoa(int(time.Until(exceeded.ResetAt).Round(time.Second).Seconds()))
 	if got := w.Header().Get("Retry-After"); got != wantRetryAfter {
@@ -170,19 +170,19 @@ func TestWriteBudgetErrorSetsRetryAfterAndCustomerMessage(t *testing.T) {
 	if got, want := body.Error.Message, exceeded.CustomerMessage(); got != want {
 		t.Fatalf("error.message = %q, want %q", got, want)
 	}
-	t.Logf("actual 429 response: status=%d Retry-After=%s X-AION-Budget-Reset=%s body=%s",
+	t.Logf("actual budget-exceeded response: status=%d Retry-After=%s X-AION-Budget-Reset=%s body=%s",
 		w.Code, w.Header().Get("Retry-After"), w.Header().Get("X-AION-Budget-Reset"), w.Body.String())
 }
 
 // A non-ExceededError (a storage failure, not an over-budget request) still
-// renders as a 429 but without the retry/reset headers, since there is no
+// renders as a 402 but without the retry/reset headers, since there is no
 // reset time to report.
 func TestWriteBudgetErrorFallsBackForNonExceededError(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeBudgetError(w, fmt.Errorf("budget: reserve usage: storage unavailable"))
 
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusPaymentRequired)
 	}
 	if got := w.Header().Get("Retry-After"); got != "" {
 		t.Fatalf("Retry-After = %q, want empty for a non-budget-exceeded error", got)
