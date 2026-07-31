@@ -3,13 +3,16 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ShubhamDX/aion/internal/apikey"
+	"github.com/ShubhamDX/aion/internal/budget"
 	"github.com/ShubhamDX/aion/internal/pricing"
 	"github.com/ShubhamDX/aion/internal/provider"
 	"github.com/ShubhamDX/aion/internal/router"
@@ -250,7 +253,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	if req.Stream {
 		reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
 		if err != nil {
-			writeError(w, http.StatusTooManyRequests, "budget_exceeded", err.Error())
+			writeBudgetError(w, err)
 			return
 		}
 		h.handleStream(w, r, &req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial, reservationDate, reservedCost)
@@ -282,7 +285,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
 	if err != nil {
-		writeError(w, http.StatusTooManyRequests, "budget_exceeded", err.Error())
+		writeBudgetError(w, err)
 		return
 	}
 
@@ -402,9 +405,12 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// defaultOutputTokenRatio sets the enforced output cap for a budgeted request
+// that omits max_tokens.
+const defaultOutputTokenRatio = 1.5
+
 // estimatedCost computes a conservative reservation before dispatch. JSON byte
-// length is used as an input-token upper bound, with framing allowance. Output
-// uses the requested cap, the configured model cap or the provider default.
+// length is used as an input-token upper bound, with framing allowance.
 func (h *Handler) estimatedCost(req *types.ChatCompletionRequest, model *router.ModelOption) float64 {
 	if h.pricing == nil || model == nil {
 		return 0
@@ -424,6 +430,28 @@ func (h *Handler) estimatedCost(req *types.ChatCompletionRequest, model *router.
 	return h.pricing.EstimateCost(model.ID, promptTokens, outTokens)
 }
 
+// applyBudgetOutputCap gives a budgeted request that omitted max_tokens a
+// bounded output allowance before reservation. The provider receives the same
+// cap, so actual output tokens cannot exceed the reserved output tokens.
+func applyBudgetOutputCap(req *types.ChatCompletionRequest, model *router.ModelOption) {
+	if req == nil || req.MaxTokens != nil {
+		return
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return
+	}
+	promptTokens := len(payload) + 64*len(req.Messages) + 256
+	outTokens := int(float64(promptTokens) * defaultOutputTokenRatio)
+	if outTokens < 1 {
+		outTokens = 1
+	}
+	if model != nil && model.MaxTokens > 0 && outTokens > model.MaxTokens {
+		outTokens = model.MaxTokens
+	}
+	req.MaxTokens = &outTokens
+}
+
 func (h *Handler) reserveBudget(
 	ctx context.Context,
 	req *types.ChatCompletionRequest,
@@ -432,6 +460,9 @@ func (h *Handler) reserveBudget(
 ) (string, float64, error) {
 	if keyInfo == nil || h.budget == nil {
 		return "", 0, nil
+	}
+	if keyInfo.DailyLimitUSD > 0 || keyInfo.MonthlyLimitUSD > 0 {
+		applyBudgetOutputCap(req, model)
 	}
 	estimate := h.estimatedCost(req, model)
 	if (keyInfo.DailyLimitUSD > 0 || keyInfo.MonthlyLimitUSD > 0) &&
@@ -570,6 +601,41 @@ func writeError(w http.ResponseWriter, status int, errType, message string) {
 			Type:    errType,
 		},
 	})
+}
+
+// writeBudgetError renders a budget.Reserve failure as HTTP 402 Payment
+// Required, not 429. A budget block is not a rate limit: the anthropic
+// ingress path already uses 429 for genuine per-second throttling
+// (rate_limit_error), and a client cannot tell "retry me shortly" from
+// "do not retry for hours" by status code alone if both share 429. 402 also
+// falls outside the retryable-status set most OpenAI/Anthropic-compatible
+// SDKs auto-retry, so it stops a blind retry loop even for a client that
+// ignores Retry-After.
+//
+// When err is a *budget.ExceededError it sets Retry-After to the seconds
+// remaining until the window resets and X-AION-Budget-Reset to the reset
+// time, and the body is the plain-language CustomerMessage, not the internal
+// reservation bookkeeping. Any other error is an internal enforcement failure
+// and fails closed with a generic 503 response.
+func writeBudgetError(w http.ResponseWriter, err error) {
+	var exceeded *budget.ExceededError
+	if errors.As(err, &exceeded) {
+		setBudgetExceededHeaders(w, exceeded)
+		writeError(w, http.StatusPaymentRequired, "budget_exceeded", exceeded.CustomerMessage())
+		return
+	}
+	slog.Error("budget enforcement unavailable", "error", err)
+	writeError(w, http.StatusServiceUnavailable, "budget_unavailable",
+		"Budget enforcement is temporarily unavailable.")
+}
+
+func setBudgetExceededHeaders(w http.ResponseWriter, exceeded *budget.ExceededError) {
+	retryAfter := int(time.Until(exceeded.ResetAt).Round(time.Second).Seconds())
+	if retryAfter < 0 {
+		retryAfter = 0
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	w.Header().Set("X-AION-Budget-Reset", exceeded.ResetAt.Format(time.RFC3339))
 }
 
 // keyIDFromInfo returns a stable identifier for telemetry. Returns "anonymous"

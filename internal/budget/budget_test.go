@@ -2,7 +2,9 @@ package budget
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,5 +111,73 @@ func TestReserveEnforcesMonthlyLimit(t *testing.T) {
 	}
 	if _, err := manager.Reserve(ctx, "tester", 1.01, 10, 3); err == nil {
 		t.Fatal("Reserve must reject a request whose estimate crosses the monthly limit")
+	}
+}
+
+func TestReserveExceededErrorCarriesDailyResetTime(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+	before := time.Now().UTC()
+	_, err := manager.Reserve(ctx, "tester", 6, 5, 20)
+	var exceeded *ExceededError
+	if !errors.As(err, &exceeded) {
+		t.Fatalf("Reserve error = %v (%T), want *ExceededError", err, err)
+	}
+	if exceeded.Scope != "daily" {
+		t.Fatalf("Scope = %q, want %q", exceeded.Scope, "daily")
+	}
+	if exceeded.Limit != 5 || exceeded.Estimate != 6 {
+		t.Fatalf("Limit = %.2f, Estimate = %.2f, want 5.00 and 6.00", exceeded.Limit, exceeded.Estimate)
+	}
+	wantReset := nextUTCMidnight(before)
+	if !exceeded.ResetAt.Equal(wantReset) {
+		t.Fatalf("ResetAt = %v, want %v", exceeded.ResetAt, wantReset)
+	}
+	if exceeded.ResetAt.Before(before) {
+		t.Fatalf("ResetAt %v must be in the future relative to %v", exceeded.ResetAt, before)
+	}
+}
+
+func TestReserveExceededErrorCarriesMonthlyResetTime(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+	before := time.Now().UTC()
+	_, err := manager.Reserve(ctx, "tester", 21, 0, 20)
+	var exceeded *ExceededError
+	if !errors.As(err, &exceeded) {
+		t.Fatalf("Reserve error = %v (%T), want *ExceededError", err, err)
+	}
+	if exceeded.Scope != "monthly" {
+		t.Fatalf("Scope = %q, want %q", exceeded.Scope, "monthly")
+	}
+	wantReset := nextUTCMonth(before)
+	if !exceeded.ResetAt.Equal(wantReset) {
+		t.Fatalf("ResetAt = %v, want %v", exceeded.ResetAt, wantReset)
+	}
+}
+
+func TestExceededErrorCustomerMessageHasNoDollarAmount(t *testing.T) {
+	e := &ExceededError{Scope: "monthly", Used: 3.7708, Estimate: 1.2798, Limit: 5, ResetAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	msg := e.CustomerMessage()
+	if got, want := msg, "This request would exceed the monthly usage limit. Resets 2026-08-01 00:00 UTC."; got != want {
+		t.Fatalf("CustomerMessage = %q, want %q", got, want)
+	}
+	if strings.Contains(msg, "$") {
+		t.Fatalf("CustomerMessage = %q, must not name a dollar amount", msg)
+	}
+	// Error() stays available for logs with full reservation detail.
+	if e.Error() == msg {
+		t.Fatalf("Error() and CustomerMessage() should differ (log detail vs customer-facing text)")
+	}
+}
+
+func TestExceededErrorCustomerMessageNamesTheScopeThatWasHit(t *testing.T) {
+	daily := &ExceededError{Scope: "daily", Limit: 3, ResetAt: time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)}
+	if got, want := daily.CustomerMessage(), "This request would exceed the daily usage limit. Resets 2026-07-31 00:00 UTC."; got != want {
+		t.Fatalf("CustomerMessage = %q, want %q", got, want)
+	}
+	monthly := &ExceededError{Scope: "monthly", Limit: 90, ResetAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	if got, want := monthly.CustomerMessage(), "This request would exceed the monthly usage limit. Resets 2026-08-01 00:00 UTC."; got != want {
+		t.Fatalf("CustomerMessage = %q, want %q", got, want)
 	}
 }

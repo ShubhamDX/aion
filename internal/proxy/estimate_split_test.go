@@ -2,8 +2,15 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/ShubhamDX/aion/internal/budget"
 	"github.com/ShubhamDX/aion/internal/config"
 	"github.com/ShubhamDX/aion/internal/pricing"
 	"github.com/ShubhamDX/aion/internal/router"
@@ -49,17 +56,55 @@ func TestEstimatedCostIsCacheBlind(t *testing.T) {
 	}
 }
 
-func TestEstimatedCostUsesConfiguredOutputCapWhenRequestOmitsIt(t *testing.T) {
+// When the request omits max_tokens, the reservation uses a realistic
+// multiple of the prompt (defaultOutputTokenRatio), not the model's full
+// output ceiling: assuming the ceiling on every request reserves far more
+// budget headroom than most turns use.
+func TestEstimatedCostUsesRatioHeuristicWhenRequestOmitsMaxTokens(t *testing.T) {
 	h := cachedModelHandler()
 	model, _ := h.router.FindModel("sonnet")
 	req := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: mkContent(20)}}}
+	applyBudgetOutputCap(req, model)
+	if req.MaxTokens == nil {
+		t.Fatal("budget output cap was not applied")
+	}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	want := h.pricing.EstimateCost("sonnet", len(payload)+64*len(req.Messages)+256, 4096)
+	promptTokens := len(payload) + 64*len(req.Messages) + 256
+	wantOutTokens := *req.MaxTokens
+	if wantOutTokens >= model.MaxTokens {
+		t.Fatalf("test fixture must keep the ratio estimate (%d) below the model cap (%d) to exercise the uncapped path", wantOutTokens, model.MaxTokens)
+	}
+	want := h.pricing.EstimateCost("sonnet", promptTokens, wantOutTokens)
 	if got := h.estimatedCost(req, model); got != want {
-		t.Fatalf("estimatedCost = %.10f, want configured-cap estimate %.10f", got, want)
+		t.Fatalf("estimatedCost = %.10f, want ratio-heuristic estimate %.10f", got, want)
+	}
+}
+
+// A large enough prompt pushes the ratio heuristic past the model's
+// configured output cap; the reservation must clamp to the cap rather than
+// reserve more than the model can ever emit.
+func TestEstimatedCostClampsRatioEstimateToModelMaxTokens(t *testing.T) {
+	h := cachedModelHandler()
+	model, _ := h.router.FindModel("sonnet")
+	req := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: mkContent(6000)}}}
+	applyBudgetOutputCap(req, model)
+	if req.MaxTokens == nil {
+		t.Fatal("budget output cap was not applied")
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	promptTokens := len(payload) + 64*len(req.Messages) + 256
+	if *req.MaxTokens != model.MaxTokens {
+		t.Fatalf("budget output cap = %d, want model cap %d", *req.MaxTokens, model.MaxTokens)
+	}
+	want := h.pricing.EstimateCost("sonnet", promptTokens, model.MaxTokens)
+	if got := h.estimatedCost(req, model); got != want {
+		t.Fatalf("estimatedCost = %.10f, want cap-clamped estimate %.10f", got, want)
 	}
 }
 
@@ -97,4 +142,120 @@ func mkContent(n int) json.RawMessage {
 	}
 	b[n+1] = '"'
 	return json.RawMessage(b)
+}
+
+// writeBudgetError is what actually reaches the client on a budget block; this
+// verifies the real HTTP output (status, headers, JSON body), not just the
+// ExceededError string formatting in the budget package.
+func TestWriteBudgetErrorSetsRetryAfterAndCustomerMessage(t *testing.T) {
+	exceeded := &budget.ExceededError{
+		Scope: "monthly", Used: 3.7708, Estimate: 1.2798, Limit: 5,
+		ResetAt: time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second),
+	}
+	w := httptest.NewRecorder()
+	writeBudgetError(w, exceeded)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusPaymentRequired)
+	}
+	wantRetryAfter := strconv.Itoa(int(time.Until(exceeded.ResetAt).Round(time.Second).Seconds()))
+	if got := w.Header().Get("Retry-After"); got != wantRetryAfter {
+		t.Fatalf("Retry-After = %q, want %q", got, wantRetryAfter)
+	}
+	if got, want := w.Header().Get("X-AION-Budget-Reset"), exceeded.ResetAt.Format(time.RFC3339); got != want {
+		t.Fatalf("X-AION-Budget-Reset = %q, want %q", got, want)
+	}
+	var body types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v (%s)", err, w.Body.String())
+	}
+	if body.Error.Type != "budget_exceeded" {
+		t.Fatalf("error.type = %q, want %q", body.Error.Type, "budget_exceeded")
+	}
+	if strings.Contains(body.Error.Message, "reserved") {
+		t.Fatalf("error.message %q still leaks internal reservation jargon", body.Error.Message)
+	}
+	if got, want := body.Error.Message, exceeded.CustomerMessage(); got != want {
+		t.Fatalf("error.message = %q, want %q", got, want)
+	}
+	t.Logf("actual budget-exceeded response: status=%d Retry-After=%s X-AION-Budget-Reset=%s body=%s",
+		w.Code, w.Header().Get("Retry-After"), w.Header().Get("X-AION-Budget-Reset"), w.Body.String())
+}
+
+// A non-ExceededError is an internal enforcement failure. It fails closed
+// without exposing storage details.
+func TestWriteBudgetErrorFallsBackForNonExceededError(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeBudgetError(w, fmt.Errorf("budget: reserve usage: storage unavailable"))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if got := w.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q, want empty for a non-budget-exceeded error", got)
+	}
+	var body types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v (%s)", err, w.Body.String())
+	}
+	if body.Error.Type != "budget_unavailable" {
+		t.Fatalf("error.type = %q, want budget_unavailable", body.Error.Type)
+	}
+	if body.Error.Message != "Budget enforcement is temporarily unavailable." {
+		t.Fatalf("error.message = %q, want generic unavailable message", body.Error.Message)
+	}
+}
+
+func TestWriteAnthropicBudgetErrorUsesBillingContract(t *testing.T) {
+	exceeded := &budget.ExceededError{
+		Scope: "daily", Limit: 3,
+		ResetAt: time.Now().UTC().Add(time.Hour).Truncate(time.Second),
+	}
+	w := httptest.NewRecorder()
+	writeAnthropicBudgetError(w, exceeded)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusPaymentRequired)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After is missing")
+	}
+	if got, want := w.Header().Get("X-AION-Budget-Reset"), exceeded.ResetAt.Format(time.RFC3339); got != want {
+		t.Fatalf("X-AION-Budget-Reset = %q, want %q", got, want)
+	}
+	var body anthropicIngressError
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+	if body.Error.Type != "billing_error" {
+		t.Fatalf("error.type = %q, want billing_error", body.Error.Type)
+	}
+	if body.Error.Message != exceeded.CustomerMessage() {
+		t.Fatalf("error.message = %q, want %q", body.Error.Message, exceeded.CustomerMessage())
+	}
+}
+
+func TestWriteAnthropicBudgetErrorHidesStorageFailure(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeAnthropicBudgetError(w, fmt.Errorf("database password appeared here"))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if strings.Contains(w.Body.String(), "password") {
+		t.Fatalf("response leaks internal failure: %s", w.Body.String())
+	}
+}
+
+func TestApplyBudgetOutputCapLeavesExplicitClientCapUnchanged(t *testing.T) {
+	explicit := 123
+	req := &types.ChatCompletionRequest{
+		Messages:  []types.Message{{Role: "user", Content: mkContent(20)}},
+		MaxTokens: &explicit,
+	}
+	model := &router.ModelOption{MaxTokens: 4096}
+	applyBudgetOutputCap(req, model)
+	if req.MaxTokens == nil || *req.MaxTokens != explicit {
+		t.Fatalf("max_tokens = %v, want %d", req.MaxTokens, explicit)
+	}
 }
