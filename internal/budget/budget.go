@@ -52,7 +52,7 @@ func (e *ExceededError) Error() string {
 // see; keep Error() for logs.
 func (e *ExceededError) CustomerMessage() string {
 	return fmt.Sprintf(
-		"%s usage limit reached. Resets %s.",
+		"This request would exceed the %s usage limit. Resets %s.",
 		e.Scope, e.ResetAt.Format("2006-01-02 15:04 MST"),
 	)
 }

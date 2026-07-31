@@ -64,12 +64,16 @@ func TestEstimatedCostUsesRatioHeuristicWhenRequestOmitsMaxTokens(t *testing.T) 
 	h := cachedModelHandler()
 	model, _ := h.router.FindModel("sonnet")
 	req := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: mkContent(20)}}}
+	applyBudgetOutputCap(req, model)
+	if req.MaxTokens == nil {
+		t.Fatal("budget output cap was not applied")
+	}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
 	promptTokens := len(payload) + 64*len(req.Messages) + 256
-	wantOutTokens := int(float64(promptTokens) * defaultOutputTokenRatio)
+	wantOutTokens := *req.MaxTokens
 	if wantOutTokens >= model.MaxTokens {
 		t.Fatalf("test fixture must keep the ratio estimate (%d) below the model cap (%d) to exercise the uncapped path", wantOutTokens, model.MaxTokens)
 	}
@@ -86,13 +90,17 @@ func TestEstimatedCostClampsRatioEstimateToModelMaxTokens(t *testing.T) {
 	h := cachedModelHandler()
 	model, _ := h.router.FindModel("sonnet")
 	req := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: mkContent(6000)}}}
+	applyBudgetOutputCap(req, model)
+	if req.MaxTokens == nil {
+		t.Fatal("budget output cap was not applied")
+	}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
 	promptTokens := len(payload) + 64*len(req.Messages) + 256
-	if int(float64(promptTokens)*defaultOutputTokenRatio) <= model.MaxTokens {
-		t.Fatalf("test fixture must push the ratio estimate above the model cap (%d) to exercise the clamp", model.MaxTokens)
+	if *req.MaxTokens != model.MaxTokens {
+		t.Fatalf("budget output cap = %d, want model cap %d", *req.MaxTokens, model.MaxTokens)
 	}
 	want := h.pricing.EstimateCost("sonnet", promptTokens, model.MaxTokens)
 	if got := h.estimatedCost(req, model); got != want {
@@ -174,15 +182,14 @@ func TestWriteBudgetErrorSetsRetryAfterAndCustomerMessage(t *testing.T) {
 		w.Code, w.Header().Get("Retry-After"), w.Header().Get("X-AION-Budget-Reset"), w.Body.String())
 }
 
-// A non-ExceededError (a storage failure, not an over-budget request) still
-// renders as a 402 but without the retry/reset headers, since there is no
-// reset time to report.
+// A non-ExceededError is an internal enforcement failure. It fails closed
+// without exposing storage details.
 func TestWriteBudgetErrorFallsBackForNonExceededError(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeBudgetError(w, fmt.Errorf("budget: reserve usage: storage unavailable"))
 
-	if w.Code != http.StatusPaymentRequired {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusPaymentRequired)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
 	}
 	if got := w.Header().Get("Retry-After"); got != "" {
 		t.Fatalf("Retry-After = %q, want empty for a non-budget-exceeded error", got)
@@ -191,7 +198,64 @@ func TestWriteBudgetErrorFallsBackForNonExceededError(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response body is not valid JSON: %v (%s)", err, w.Body.String())
 	}
-	if body.Error.Message != "budget: reserve usage: storage unavailable" {
-		t.Fatalf("error.message = %q, want the raw storage error", body.Error.Message)
+	if body.Error.Type != "budget_unavailable" {
+		t.Fatalf("error.type = %q, want budget_unavailable", body.Error.Type)
+	}
+	if body.Error.Message != "Budget enforcement is temporarily unavailable." {
+		t.Fatalf("error.message = %q, want generic unavailable message", body.Error.Message)
+	}
+}
+
+func TestWriteAnthropicBudgetErrorUsesBillingContract(t *testing.T) {
+	exceeded := &budget.ExceededError{
+		Scope: "daily", Limit: 3,
+		ResetAt: time.Now().UTC().Add(time.Hour).Truncate(time.Second),
+	}
+	w := httptest.NewRecorder()
+	writeAnthropicBudgetError(w, exceeded)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusPaymentRequired)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After is missing")
+	}
+	if got, want := w.Header().Get("X-AION-Budget-Reset"), exceeded.ResetAt.Format(time.RFC3339); got != want {
+		t.Fatalf("X-AION-Budget-Reset = %q, want %q", got, want)
+	}
+	var body anthropicIngressError
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+	if body.Error.Type != "billing_error" {
+		t.Fatalf("error.type = %q, want billing_error", body.Error.Type)
+	}
+	if body.Error.Message != exceeded.CustomerMessage() {
+		t.Fatalf("error.message = %q, want %q", body.Error.Message, exceeded.CustomerMessage())
+	}
+}
+
+func TestWriteAnthropicBudgetErrorHidesStorageFailure(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeAnthropicBudgetError(w, fmt.Errorf("database password appeared here"))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if strings.Contains(w.Body.String(), "password") {
+		t.Fatalf("response leaks internal failure: %s", w.Body.String())
+	}
+}
+
+func TestApplyBudgetOutputCapLeavesExplicitClientCapUnchanged(t *testing.T) {
+	explicit := 123
+	req := &types.ChatCompletionRequest{
+		Messages:  []types.Message{{Role: "user", Content: mkContent(20)}},
+		MaxTokens: &explicit,
+	}
+	model := &router.ModelOption{MaxTokens: 4096}
+	applyBudgetOutputCap(req, model)
+	if req.MaxTokens == nil || *req.MaxTokens != explicit {
+		t.Fatalf("max_tokens = %v, want %d", req.MaxTokens, explicit)
 	}
 }

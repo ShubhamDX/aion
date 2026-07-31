@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ShubhamDX/aion/internal/apikey"
+	"github.com/ShubhamDX/aion/internal/budget"
 	"github.com/ShubhamDX/aion/internal/pricing"
 	"github.com/ShubhamDX/aion/internal/provider"
 	"github.com/ShubhamDX/aion/internal/router"
@@ -526,7 +528,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	if req.Stream {
 		reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
 		if err != nil {
-			writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
+			writeAnthropicBudgetError(w, err)
 			return
 		}
 		h.handleAnthropicStream(w, r, req, prov, selectedModel, tier, score, signals, keyInfo, requestID, start, sessionMaterial, reservationDate, reservedCost)
@@ -556,7 +558,7 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
 	if err != nil {
-		writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
+		writeAnthropicBudgetError(w, err)
 		return
 	}
 
@@ -1063,4 +1065,16 @@ func writeAnthropicError(w http.ResponseWriter, status int, errType, message str
 			Message: message,
 		},
 	})
+}
+
+func writeAnthropicBudgetError(w http.ResponseWriter, err error) {
+	var exceeded *budget.ExceededError
+	if errors.As(err, &exceeded) {
+		setBudgetExceededHeaders(w, exceeded)
+		writeAnthropicError(w, http.StatusPaymentRequired, "billing_error", exceeded.CustomerMessage())
+		return
+	}
+	slog.Error("budget enforcement unavailable", "ingress", "anthropic", "error", err)
+	writeAnthropicError(w, http.StatusServiceUnavailable, "api_error",
+		"Budget enforcement is temporarily unavailable.")
 }
