@@ -138,26 +138,68 @@ func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionReq
 	}
 	defer resp.Body.Close()
 
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("bedrock: read response: %w", err)
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("bedrock: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var aResp anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&aResp); err != nil {
-		return nil, fmt.Errorf("bedrock: decode response: %w", err)
+	chatResp, err := parseBedrockResponse(respBody, model)
+	if err != nil {
+		return nil, fmt.Errorf("bedrock: model %q: %w", model, err)
 	}
 
-	// Bedrock doesn't return model in the body; fill it in.
-	if aResp.Model == "" {
-		aResp.Model = model
-	}
-
-	chatResp := translateAnthropicResponse(&aResp)
 	return &Response{
 		ChatResponse: chatResp,
 		StatusCode:   resp.StatusCode,
 	}, nil
+}
+
+// parseBedrockResponse decodes a Bedrock invoke response body into an
+// OpenAI-style ChatCompletionResponse. Bedrock's invoke endpoint returns a
+// different envelope per model family: Anthropic Claude models return the
+// Messages API shape (a top-level "content" block array and "usage" with
+// input_tokens/output_tokens), while other model families hosted on
+// Bedrock, e.g. Qwen3, return an OpenAI-compatible shape directly
+// (top-level "choices" and "usage" with prompt_tokens/completion_tokens).
+// Decoding the wrong shape into anthropicResponse doesn't fail: unknown
+// fields are silently ignored, leaving content nil and usage all zero. So
+// the envelope is detected by its distinguishing top-level field before
+// decoding, instead of assuming one shape for every model.
+func parseBedrockResponse(body []byte, model string) (*types.ChatCompletionResponse, error) {
+	var probe struct {
+		Content json.RawMessage `json:"content"`
+		Choices json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	switch {
+	case probe.Choices != nil:
+		var chatResp types.ChatCompletionResponse
+		if err := json.Unmarshal(body, &chatResp); err != nil {
+			return nil, fmt.Errorf("decode OpenAI-style response: %w", err)
+		}
+		if chatResp.Model == "" {
+			chatResp.Model = model
+		}
+		return &chatResp, nil
+	case probe.Content != nil:
+		var aResp anthropicResponse
+		if err := json.Unmarshal(body, &aResp); err != nil {
+			return nil, fmt.Errorf("decode Anthropic-style response: %w", err)
+		}
+		if aResp.Model == "" {
+			aResp.Model = model
+		}
+		return translateAnthropicResponse(&aResp), nil
+	default:
+		return nil, fmt.Errorf("unrecognized response shape (no top-level \"content\" or \"choices\" field): %s", string(body))
+	}
 }
 
 // SendStream sends a streaming request to Bedrock's invoke-with-response-stream endpoint.
