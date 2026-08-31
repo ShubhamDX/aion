@@ -385,7 +385,6 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 				"No healthy model available for tier: "+err.Error())
 			return
 		}
-		tier = selectedModel.Tier
 
 	case model == "aion-local":
 		tier = types.Tier1
@@ -405,7 +404,6 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", err.Error())
 			return
 		}
-		tier = selectedModel.Tier
 
 	default:
 		var err error
@@ -424,8 +422,8 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		tier = selectedModel.Tier
 	}
+	tier = selectedModel.Tier
 
 	// 3b. Gateway pre-request hook (optional) — SAME enterprise policy path as
 	// the OpenAI ingress, so /v1/messages traffic cannot bypass decisions or
