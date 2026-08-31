@@ -110,6 +110,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 				"No healthy model available for tier: "+err.Error())
 			return
 		}
+		tier = selectedModel.Tier
 
 	case model == "aion-local":
 		// Force routing to the local llama.cpp provider.
@@ -131,6 +132,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "no_model_available", err.Error())
 			return
 		}
+		tier = selectedModel.Tier
 
 	default:
 		// Specific model requested -- bypass classification.
