@@ -140,8 +140,8 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "model_not_found", "Model not found: "+model)
 			return
 		}
-		tier = selectedModel.Tier
 	}
+	tier = selectedModel.Tier
 
 	// 2b. Gateway pre-request hook (optional). An embedding product runs its
 	// decision here: block, hold for approval, or override the routed model

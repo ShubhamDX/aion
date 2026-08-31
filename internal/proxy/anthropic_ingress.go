@@ -422,8 +422,8 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		tier = selectedModel.Tier
 	}
+	tier = selectedModel.Tier
 
 	// 3b. Gateway pre-request hook (optional) — SAME enterprise policy path as
 	// the OpenAI ingress, so /v1/messages traffic cannot bypass decisions or
