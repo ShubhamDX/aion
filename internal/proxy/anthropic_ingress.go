@@ -128,6 +128,9 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 				}
 				if combined != "" {
 					b, _ := json.Marshal(combined)
+					if hasTextCacheCheckpoint(aReq.System) {
+						b = aReq.System
+					}
 					oReq.Messages = append(oReq.Messages, types.Message{
 						Role:    "system",
 						Content: b,
@@ -228,7 +231,7 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 				}
 				allText += block.Text
 			}
-			if isTextBlocks && allText != "" {
+			if isTextBlocks && allText != "" && !hasTextCacheCheckpoint(m.Content) {
 				b, _ := json.Marshal(allText)
 				msg.Content = b
 			}
@@ -250,6 +253,28 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 	}
 
 	return oReq
+}
+
+// Preserve explicit text checkpoints across the protocol boundary. Unmarked
+// requests keep their existing flattened representation.
+func hasTextCacheCheckpoint(content json.RawMessage) bool {
+	var blocks []struct {
+		Type         string          `json:"type"`
+		CacheControl json.RawMessage `json:"cache_control"`
+	}
+	if json.Unmarshal(content, &blocks) != nil {
+		return false
+	}
+	found := false
+	for _, block := range blocks {
+		if block.Type != "text" {
+			return false
+		}
+		if len(block.CacheControl) > 0 && string(block.CacheControl) != "null" {
+			found = true
+		}
+	}
+	return found
 }
 
 // extractToolResultContent extracts a string from a tool_result content field,
