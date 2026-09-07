@@ -1,12 +1,46 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/ShubhamDX/aion/internal/types"
 )
+
+func TestBedrockCacheCheckpointAndUsageThroughHTTP(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content []map[string]any `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(400)
+			return
+		}
+		if len(body.Messages) != 1 || len(body.Messages[0].Content) != 2 || body.Messages[0].Content[0]["cache_control"] == nil {
+			t.Error("checkpoint lost before upstream dispatch")
+			w.WriteHeader(400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"test","model":"haiku","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":4,"cache_read_input_tokens":5000}}`))
+	}))
+	defer upstream.Close()
+	p := &BedrockProvider{baseURL: upstream.URL, client: upstream.Client(), bearerToken: "test-only"}
+	response, err := p.Send(context.Background(), &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"prefix","cache_control":{"type":"ephemeral"}},{"type":"text","text":"next"}]`)}}}, "haiku")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ChatResponse.Usage.CacheReadInputTokens != 5000 || response.ChatResponse.Usage.UncachedInputTokens != 7 {
+		t.Fatalf("cache usage lost: %+v", response.ChatResponse.Usage)
+	}
+}
 
 func TestBedrockPreservesExplicitCacheCheckpoints(t *testing.T) {
 	for _, role := range []string{"system", "developer", "user", "assistant"} {
