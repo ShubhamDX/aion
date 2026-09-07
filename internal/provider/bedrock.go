@@ -35,7 +35,7 @@ const (
 type bedrockRequest struct {
 	AnthropicVersion string          `json:"anthropic_version"`
 	Messages         []anthropicMsg  `json:"messages"`
-	System           string          `json:"system,omitempty"`
+	System           any             `json:"system,omitempty"`
 	MaxTokens        int             `json:"max_tokens"`
 	Stream           bool            `json:"-"`
 	Tools            []anthropicTool `json:"tools,omitempty"`
@@ -210,6 +210,9 @@ func (p *BedrockProvider) translateRequest(req *types.ChatCompletionRequest, str
 	}
 
 	bReq.System, bReq.Messages = translateAnthropicMessages(req.Messages)
+	// Preserve explicit cache checkpoints on text messages. The shared legacy
+	// translation flattens content arrays and otherwise drops these markers.
+	bReq.System, bReq.Messages = translateBedrockCacheMessages(req.Messages, bReq.System)
 
 	for _, t := range req.Tools {
 		bReq.Tools = append(bReq.Tools, anthropicTool{
