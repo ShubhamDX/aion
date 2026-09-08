@@ -110,6 +110,11 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 				"No healthy model available for tier: "+err.Error())
 			return
 		}
+		// RouteWithFallback may have routed to an adjacent tier when the
+		// classified tier has no eligible model; tier must reflect the model
+		// actually selected so the response header and signed ledger row don't
+		// report a stale, no-longer-true tier.
+		tier = selectedModel.Tier
 
 	case model == "aion-local":
 		// Force routing to the local llama.cpp provider.
