@@ -251,6 +251,10 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Dispatch -- streaming or non-streaming.
 	if req.Stream {
+		if !h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier) {
+			writeError(w, http.StatusServiceUnavailable, "output_control_unavailable", "Cannot enforce the configured output limit")
+			return
+		}
 		reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
 		if err != nil {
 			writeBudgetError(w, err)
@@ -283,7 +287,10 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// 5d. Output-control seam (OP3b): non-stream only, after context compression
 	// and before dispatch. Nil hook or nil result leaves the request unchanged.
-	h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier)
+	if !h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier) {
+		writeError(w, http.StatusServiceUnavailable, "output_control_unavailable", "Cannot enforce the configured output limit")
+		return
+	}
 
 	reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
 	if err != nil {

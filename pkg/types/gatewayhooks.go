@@ -214,7 +214,9 @@ type OutputControlInput struct {
 // MaxTokens, when non-nil, replaces req.MaxTokens before dispatch. Applied is
 // informational for the embedding product's evidence; the proxy applies each
 // non-nil field regardless of Applied.
+// Block takes precedence over replacements and prevents provider dispatch.
 type OutputControlResult struct {
+	Block     bool
 	Messages  []Message
 	MaxTokens *int
 	Applied   bool
