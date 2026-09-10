@@ -46,12 +46,14 @@ type bedrockRequest struct {
 
 // BedrockProvider implements Provider for Claude models on AWS Bedrock.
 type BedrockProvider struct {
-	bearerToken string
-	credentials aws.CredentialsProvider
-	signer      *v4.Signer
-	region      string
-	baseURL     string
-	client      *http.Client
+	bearerToken      string
+	credentials      aws.CredentialsProvider
+	signer           *v4.Signer
+	region           string
+	baseURL          string
+	mantleBaseURL    string
+	reasoningEfforts map[string]string
+	client           *http.Client
 }
 
 // NewBedrock creates a new Bedrock provider from the given configuration.
@@ -70,6 +72,20 @@ func NewBedrock(cfg *config.ProviderConfig) (*BedrockProvider, error) {
 		region:  region,
 		baseURL: base,
 		client:  &http.Client{},
+	}
+	provider.mantleBaseURL = fmt.Sprintf("https://bedrock-mantle.%s.api.aws/openai/v1", region)
+	if cfg.MantleBaseURL != "" {
+		provider.mantleBaseURL = strings.TrimRight(cfg.MantleBaseURL, "/")
+	}
+	provider.reasoningEfforts = make(map[string]string)
+	for _, model := range cfg.Models {
+		if model.ReasoningEffort == "" {
+			continue
+		}
+		if !isBedrockMantleModel(model.ID) || !validReasoningEffort(model.ReasoningEffort) {
+			return nil, fmt.Errorf("bedrock: invalid reasoning_effort for model %s", model.ID)
+		}
+		provider.reasoningEfforts[model.ID] = model.ReasoningEffort
 	}
 	mode := cfg.CredentialMode
 	if mode == "" {
@@ -116,6 +132,9 @@ func (p *BedrockProvider) Name() string { return "bedrock" }
 
 // Send sends a non-streaming request to Bedrock's invoke endpoint.
 func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionRequest, model string) (*Response, error) {
+	if isBedrockMantleModel(model) {
+		return p.sendMantle(ctx, req, model)
+	}
 	bReq := p.translateRequest(req, false)
 
 	body, err := json.Marshal(bReq)
@@ -162,6 +181,9 @@ func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionReq
 
 // SendStream sends a streaming request to Bedrock's invoke-with-response-stream endpoint.
 func (p *BedrockProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
+	if isBedrockMantleModel(model) {
+		return p.streamMantle(ctx, req, model)
+	}
 	bReq := p.translateRequest(req, true)
 
 	body, err := json.Marshal(bReq)

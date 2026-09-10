@@ -74,6 +74,7 @@ type ManagedLlamaConfig struct {
 type ProviderConfig struct {
 	APIKey         string        `yaml:"api_key"`
 	BaseURL        string        `yaml:"base_url,omitempty"`
+	MantleBaseURL  string        `yaml:"mantle_base_url,omitempty"`
 	Region         string        `yaml:"region,omitempty"`
 	ProjectID      string        `yaml:"project_id,omitempty"`
 	CredentialMode string        `yaml:"credential_mode,omitempty"`
@@ -85,6 +86,7 @@ type ProviderConfig struct {
 
 // ModelConfig describes a model exposed through a provider.
 type ModelConfig struct {
+	ReasoningEffort       string  `yaml:"reasoning_effort,omitempty"`
 	ID                    string  `yaml:"id"`
 	Tier                  int     `yaml:"tier"`
 	InputPricePer1M       float64 `yaml:"input_price_per_1m"`

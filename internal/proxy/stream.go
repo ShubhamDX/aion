@@ -67,6 +67,8 @@ func (h *Handler) handleStream(
 
 	var totalUsage types.Usage
 	streamComplete := false
+	var prefix streamPrefix
+	deliveryFailed := false
 
 	// Response-action governance (optional): when installed, the moment the FIRST
 	// tool-call fragment appears the proxy stops emitting and buffers EVERY
@@ -87,9 +89,13 @@ func (h *Handler) handleStream(
 		data, marshalErr := json.Marshal(chunk)
 		if marshalErr != nil {
 			slog.Error("stream marshal error", "error", marshalErr)
+			deliveryFailed = true
 			return false
 		}
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			deliveryFailed = true
+			return false
+		}
 		flusher.Flush()
 		return true
 	}
@@ -110,6 +116,7 @@ func (h *Handler) handleStream(
 		}
 
 		// Accumulate usage if the provider sends it.
+		prefix.add(chunk)
 		if chunk.Usage != nil {
 			totalUsage.MergeFrom(*chunk.Usage)
 		}
@@ -135,12 +142,14 @@ func (h *Handler) handleStream(
 	if governTools && buffering {
 		switch {
 		case readErr:
+			prefix.invalidate()
 			// Upstream failed mid-stream: the buffered calls may be incomplete. Fail
 			// closed with a forced block; release no buffered fragment.
 			writeChunk(failClosedEnvelopeChunk(model.ID, "upstream_stream_error"))
 		default:
 			proposed, perr := toolBuf.proposed()
 			if perr != nil {
+				prefix.invalidate()
 				// Failed closed (memory ceiling or invalid/conflicting tool-call
 				// identity): release nothing, emit a forced block.
 				writeChunk(failClosedEnvelopeChunk(model.ID, toolBuf.failedReasonCode()))
@@ -164,6 +173,7 @@ func (h *Handler) handleStream(
 						}
 					}
 				} else {
+					prefix.invalidate()
 					writeChunk(envelopeChunk(model.ID, proposed, decision))
 				}
 			}
@@ -171,7 +181,9 @@ func (h *Handler) handleStream(
 	}
 
 	// Terminate the SSE stream.
-	fmt.Fprintf(w, "data: [DONE]\n\n")
+	if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
+		deliveryFailed = true
+	}
 	flusher.Flush()
 
 	// Calculate cost and savings from accumulated usage.
@@ -211,11 +223,9 @@ func (h *Handler) handleStream(
 	// contract as the non-stream paths): the hook cannot delay stream completion,
 	// a hook panic cannot crash the proxy, and DrainPostResponse tracks it.
 	if h.hooks != nil && h.hooks.PostResponse != nil {
-		// Streaming: the response body is not reassembled, so the next-turn prefix
-		// digest stays "" (we do NOT buffer the stream to compute it) and
-		// ResponseContents stays nil (an embedding product safe-degrades, e.g.
-		// schema observe writes no row on a stream). This turn's session + prefix
-		// material is still available from the request.
+		sessionMaterial.NextCachePrefixMaterialSHA256 = prefix.digest(req, streamComplete && !readErr && !deliveryFailed && ctx.Err() == nil)
+		// Only a bounded, completed response contributes next-turn warmth.
+		// ResponseContents remains nil; raw response text is not exposed to hooks.
 		h.dispatchPostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:       requestID,
 			PrincipalID:     keyIDFromInfo(keyInfo),

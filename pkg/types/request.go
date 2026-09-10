@@ -13,6 +13,7 @@ type ChatCompletionRequest struct {
 	Stream           bool             `json:"stream,omitempty"`
 	Stop             json.RawMessage  `json:"stop,omitempty"` // string or []string
 	MaxTokens        *int             `json:"max_tokens,omitempty"`
+	ReasoningEffort  string           `json:"reasoning_effort,omitempty"`
 	PresencePenalty  *float64         `json:"presence_penalty,omitempty"`
 	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
 	LogitBias        map[string]int   `json:"logit_bias,omitempty"`

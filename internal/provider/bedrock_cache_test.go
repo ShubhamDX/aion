@@ -87,3 +87,52 @@ func TestBedrockOmitsEmptySystem(t *testing.T) {
 		t.Fatalf("empty system was added: %s", body)
 	}
 }
+
+func TestBedrockWirePreservesMultiturnHistory(t *testing.T) {
+	history := []types.Message{{Role: "system", Content: json.RawMessage(`"Return the marker from this conversation."`)}, {Role: "user", Content: json.RawMessage(`"Remember ORION-47 Ω"`)}, {Role: "assistant", Content: json.RawMessage(`"ORION-47 \u03a9"`)}, {Role: "user", Content: json.RawMessage(`"What was my marker?"`)}}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System   string `json:"system"`
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if body.System != "Return the marker from this conversation." || len(body.Messages) != 3 {
+			t.Errorf("history shape changed: %+v", body)
+			return
+		}
+		for i, m := range body.Messages {
+			if m.Role != history[i+1].Role {
+				t.Errorf("role changed at %d", i)
+			}
+			var text string
+			if err := json.Unmarshal(m.Content, &text); err != nil {
+				var blocks []struct {
+					Text string `json:"text"`
+				}
+				if err := json.Unmarshal(m.Content, &blocks); err != nil {
+					t.Error(err)
+					return
+				}
+				for _, b := range blocks {
+					text += b.Text
+				}
+			}
+			if text != history[i+1].ContentString() {
+				t.Errorf("history changed at %d: %q", i, text)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ORION-47 Ω"}],"stop_reason":"end_turn","usage":{"input_tokens":30,"output_tokens":5}}`))
+	}))
+	defer upstream.Close()
+	p := &BedrockProvider{baseURL: upstream.URL, client: upstream.Client(), bearerToken: "test-only"}
+	if _, err := p.Send(context.Background(), &types.ChatCompletionRequest{Messages: history}, "haiku"); err != nil {
+		t.Fatal(err)
+	}
+}
