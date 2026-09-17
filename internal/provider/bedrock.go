@@ -44,7 +44,7 @@ type bedrockRequest struct {
 	Stop             json.RawMessage `json:"stop_sequences,omitempty"`
 }
 
-// BedrockProvider implements Provider for Claude models on AWS Bedrock.
+// BedrockProvider implements Provider for configured AWS Bedrock models.
 type BedrockProvider struct {
 	bearerToken      string
 	credentials      aws.CredentialsProvider
@@ -135,6 +135,12 @@ func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionReq
 	if isBedrockMantleModel(model) {
 		return p.sendMantle(ctx, req, model)
 	}
+	if isBedrockNovaModel(model) {
+		return p.sendNova(ctx, req, model)
+	}
+	if err := bedrockFormatSupported(req); err != nil {
+		return nil, err
+	}
 	bReq := p.translateRequest(req, false)
 
 	body, err := json.Marshal(bReq)
@@ -183,6 +189,12 @@ func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionReq
 func (p *BedrockProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
 	if isBedrockMantleModel(model) {
 		return p.streamMantle(ctx, req, model)
+	}
+	if isBedrockNovaModel(model) {
+		return p.streamNova(ctx, req, model)
+	}
+	if err := bedrockFormatSupported(req); err != nil {
+		return nil, err
 	}
 	bReq := p.translateRequest(req, true)
 
@@ -425,6 +437,9 @@ func (s *bedrockStreamReader) readFrame() (headers map[string]string, payload []
 
 	totalLen := binary.BigEndian.Uint32(prelude[0:4])
 	headersLen := binary.BigEndian.Uint32(prelude[4:8])
+	if totalLen < 16 || totalLen > 16*1024*1024 || headersLen > totalLen-16 {
+		return nil, nil, fmt.Errorf("invalid event frame lengths")
+	}
 
 	// Read the rest: headers + payload + 4-byte message CRC.
 	remaining := make([]byte, totalLen-12)
