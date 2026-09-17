@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 )
 
 // SessionSource names where a request's session identity came from. It is a
@@ -208,7 +209,7 @@ func sessionMessagesDigest(messages []governedMessage) string {
 		// cannot break the previous-response prefix chain. Unknown fields and
 		// multimodal blocks retain their full fingerprint.
 		if parts, ok := content.([]any); ok && len(parts) > 0 {
-			text := ""
+			var text strings.Builder
 			plain := true
 			for _, part := range parts {
 				block, ok := part.(map[string]any)
@@ -226,10 +227,10 @@ func sessionMessagesDigest(messages []governedMessage) string {
 						plain = false
 					}
 				}
-				text += value
+				text.WriteString(value)
 			}
 			if plain {
-				content = text
+				content = text.String()
 			}
 		}
 		canonical, err := json.Marshal(content)

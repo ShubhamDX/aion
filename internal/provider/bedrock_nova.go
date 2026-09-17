@@ -5,13 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ShubhamDX/aion/internal/types"
-	pkgtypes "github.com/ShubhamDX/aion/pkg/types"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/ShubhamDX/aion/internal/types"
+	pkgtypes "github.com/ShubhamDX/aion/pkg/types"
 )
 
 func isBedrockNovaModel(model string) bool {
@@ -133,7 +134,7 @@ func novaRequest(req *types.ChatCompletionRequest) (map[string]any, error) {
 			if role != "assistant" {
 				return nil, fmt.Errorf("bedrock Nova: tool calls require assistant role")
 			}
-			var input map[string]any
+			var input map[string]json.RawMessage
 			if json.Unmarshal([]byte(call.Function.Arguments), &input) != nil || input == nil {
 				return nil, fmt.Errorf("bedrock Nova: tool arguments must be an object")
 			}

@@ -159,3 +159,19 @@ func TestBedrockMalformedFrameLengthReturnsError(t *testing.T) {
 		}
 	}
 }
+
+func TestNovaToolArgumentsRetainNumberPrecision(t *testing.T) {
+	source := `{"large_id":9007199254740993,"amount":123456789.123456789}`
+	request := &types.ChatCompletionRequest{Messages: []types.Message{{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "c", Function: types.FunctionCall{Name: "lookup", Arguments: source}}}}}}
+	body, err := novaRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte("9007199254740993")) || !bytes.Contains(raw, []byte("123456789.123456789")) {
+		t.Fatalf("tool arguments rounded: %s", raw)
+	}
+}
