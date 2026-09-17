@@ -203,6 +203,35 @@ func sessionMessagesDigest(messages []governedMessage) string {
 		if err := decoder.Decode(&content); err != nil {
 			return ""
 		}
+		// Cache checkpoint placement is transport metadata, not conversation
+		// content. Normalize text-only blocks so adding or moving a checkpoint
+		// cannot break the previous-response prefix chain. Unknown fields and
+		// multimodal blocks retain their full fingerprint.
+		if parts, ok := content.([]any); ok && len(parts) > 0 {
+			text := ""
+			plain := true
+			for _, part := range parts {
+				block, ok := part.(map[string]any)
+				if !ok || block["type"] != "text" {
+					plain = false
+					break
+				}
+				value, ok := block["text"].(string)
+				if !ok {
+					plain = false
+					break
+				}
+				for key := range block {
+					if key != "type" && key != "text" && key != "cache_control" {
+						plain = false
+					}
+				}
+				text += value
+			}
+			if plain {
+				content = text
+			}
+		}
 		canonical, err := json.Marshal(content)
 		if err != nil {
 			return ""
