@@ -61,6 +61,13 @@ AION records routing, cost and model decisions so teams can measure savings agai
 | **OpenRouter** | OpenAI-compatible | Bearer token |
 | **Local (llama.cpp)** | llama-server (OpenAI-compatible) | none · always **$0** |
 
+Bedrock Claude preserves caller `tool_choice` on normal and streaming requests:
+`auto` stays automatic, `required` becomes native `any`, `none` disables tool use
+and a named function becomes a native named tool choice. An unknown choice or
+unavailable named tool fails before dispatch. Provider rejection never triggers
+an unconstrained retry. A required tool call does not guarantee correct arguments
+or business decisions; callers must validate the returned arguments.
+
 ### Ingress Endpoints
 
 | Endpoint | Format | Use with |

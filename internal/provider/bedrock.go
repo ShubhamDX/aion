@@ -39,6 +39,7 @@ type bedrockRequest struct {
 	MaxTokens        int             `json:"max_tokens"`
 	Stream           bool            `json:"-"`
 	Tools            []anthropicTool `json:"tools,omitempty"`
+	ToolChoice       json.RawMessage `json:"tool_choice,omitempty"`
 	Temperature      *float64        `json:"temperature,omitempty"`
 	TopP             *float64        `json:"top_p,omitempty"`
 	Stop             json.RawMessage `json:"stop_sequences,omitempty"`
@@ -142,6 +143,11 @@ func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionReq
 		return nil, err
 	}
 	bReq := p.translateRequest(req, false)
+	choice, err := bedrockClaudeToolChoice(req)
+	if err != nil {
+		return nil, err
+	}
+	bReq.ToolChoice = choice
 
 	body, err := json.Marshal(bReq)
 	if err != nil {
@@ -197,6 +203,11 @@ func (p *BedrockProvider) SendStream(ctx context.Context, req *types.ChatComplet
 		return nil, err
 	}
 	bReq := p.translateRequest(req, true)
+	choice, err := bedrockClaudeToolChoice(req)
+	if err != nil {
+		return nil, err
+	}
+	bReq.ToolChoice = choice
 
 	body, err := json.Marshal(bReq)
 	if err != nil {
