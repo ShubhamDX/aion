@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+
+	pkgconfig "github.com/ShubhamDX/aion/pkg/config"
 )
 
 // applyDefaults fills in zero-valued fields with sensible production defaults.
@@ -128,6 +130,15 @@ func validate(cfg *Config) error {
 		}
 		if bedrock.CredentialMode == "assume_role" && bedrock.RoleARN == "" {
 			errs = append(errs, errors.New("bedrock.role_arn is required for assume_role credential mode"))
+		}
+	}
+	for name, provider := range map[string]*ProviderConfig{
+		"openai": cfg.Providers.OpenAI, "vertex": cfg.Providers.Vertex, "gemini": cfg.Providers.Gemini,
+	} {
+		if provider != nil {
+			if err := pkgconfig.ValidateCloudCredentials(name, provider); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 

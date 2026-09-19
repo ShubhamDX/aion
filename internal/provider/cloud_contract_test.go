@@ -84,15 +84,15 @@ func TestCloudOfflineStreamingAndRefusal(t *testing.T) {
 			var p Provider
 			switch cloud {
 			case "vertex-claude":
-				x := NewVertex(cfg)
+				x := mustVertex(t, cfg)
 				x.client = cloudClient(server)
 				p = x
 			case "vertex-openai":
-				x := NewGemini(cfg)
+				x := mustGemini(t, cfg)
 				x.client = cloudClient(server)
 				p = x
 			default:
-				x := NewOpenAI(cfg)
+				x := mustOpenAI(t, cfg)
 				x.client = cloudClient(server)
 				p = x
 			}
@@ -134,7 +134,7 @@ func TestCloudOfflineVertexRejectsUnsupportedContractsBeforeNetwork(t *testing.T
 		{ResponseFormat: &types.ResponseFormat{Type: "json_schema"}},
 		{SchemaSettings: &types.SchemaSettings{MustEmitNative: true}},
 	}
-	p := NewVertex(&config.ProviderConfig{})
+	p := mustVertex(t, &config.ProviderConfig{})
 	// A nil transport makes accidental dispatch fail the test immediately.
 	p.client = nil
 	for _, request := range requests {
@@ -163,7 +163,7 @@ func TestCloudOfflineVertexPreservesChoiceModesAndProviderErrors(t *testing.T) {
 				http.Error(w, "fixture unsupported model setting", http.StatusBadRequest)
 			}))
 			defer server.Close()
-			p := NewVertex(&config.ProviderConfig{BaseURL: server.URL})
+			p := mustVertex(t, &config.ProviderConfig{BaseURL: server.URL})
 			p.client = cloudClient(server)
 			req := cloudRequest()
 			req.ToolChoice = json.RawMessage(mode.input)
@@ -247,15 +247,15 @@ func TestCloudOfflineRequestAndResponseContracts(t *testing.T) {
 			var p Provider
 			switch cloud {
 			case "vertex-claude":
-				x := NewVertex(cfg)
+				x := mustVertex(t, cfg)
 				x.client = cloudClient(server)
 				p = x
 			case "gemini", "vertex-openai":
-				x := NewGemini(cfg)
+				x := mustGemini(t, cfg)
 				x.client = cloudClient(server)
 				p = x
 			default:
-				x := NewOpenAI(cfg)
+				x := mustOpenAI(t, cfg)
 				x.client = cloudClient(server)
 				p = x
 			}
@@ -296,7 +296,7 @@ func TestCloudOfflineRefusalsRemainVisible(t *testing.T) {
 				fmt.Fprintf(w, `{"id":"blocked","choices":[{"index":0,"message":{"role":"assistant","content":null,"refusal":"Fixture policy refusal."},"finish_reason":%q}],"usage":{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12}}`, status)
 			}))
 			defer server.Close()
-			p := NewOpenAI(&config.ProviderConfig{APIKey: "local-test-only", BaseURL: server.URL})
+			p := mustOpenAI(t, &config.ProviderConfig{APIKey: "local-test-only", BaseURL: server.URL})
 			p.client = cloudClient(server)
 			result, err := p.Send(context.Background(), cloudRequest(), "fixture-deployment")
 			if err != nil {
@@ -317,4 +317,31 @@ func TestCloudOfflineGuardRejectsExternalDestination(t *testing.T) {
 	if _, err := transport.RoundTrip(req); err == nil {
 		t.Fatal("external destination was admitted")
 	}
+}
+
+func mustOpenAI(t *testing.T, cfg *config.ProviderConfig) *OpenAIProvider {
+	t.Helper()
+	p, err := NewOpenAI(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func mustVertex(t *testing.T, cfg *config.ProviderConfig) *VertexProvider {
+	t.Helper()
+	p, err := NewVertex(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func mustGemini(t *testing.T, cfg *config.ProviderConfig) *GeminiProvider {
+	t.Helper()
+	p, err := NewGemini(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

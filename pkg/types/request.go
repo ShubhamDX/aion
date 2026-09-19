@@ -11,6 +11,7 @@ type ChatCompletionRequest struct {
 	TopP             *float64         `json:"top_p,omitempty"`
 	N                *int             `json:"n,omitempty"`
 	Stream           bool             `json:"stream,omitempty"`
+	StreamOptions    *StreamOptions   `json:"stream_options,omitempty"`
 	Stop             json.RawMessage  `json:"stop,omitempty"` // string or []string
 	MaxTokens        *int             `json:"max_tokens,omitempty"`
 	ReasoningEffort  string           `json:"reasoning_effort,omitempty"`
@@ -29,6 +30,11 @@ type ChatCompletionRequest struct {
 	// provider path reads it to mutate a request yet. nil leaves behavior
 	// unchanged.
 	SchemaSettings *SchemaSettings `json:"-"`
+}
+
+// StreamOptions requests provider usage in a compatible streaming response.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // SchemaSettings is the neutral, provider-agnostic carrier for resolved

@@ -24,16 +24,20 @@ type OpenAIProvider struct {
 }
 
 // NewOpenAI creates a new OpenAI provider from the given configuration.
-func NewOpenAI(cfg *config.ProviderConfig) *OpenAIProvider {
+func NewOpenAI(cfg *config.ProviderConfig) (*OpenAIProvider, error) {
 	base := openAIDefaultBaseURL
 	if cfg.BaseURL != "" {
 		base = strings.TrimRight(cfg.BaseURL, "/")
 	}
+	client, err := cloudHTTPClient("openai", cfg, base)
+	if err != nil {
+		return nil, err
+	}
 	return &OpenAIProvider{
 		apiKey:  cfg.APIKey,
 		baseURL: base,
-		client:  &http.Client{},
-	}
+		client:  client,
+	}, nil
 }
 
 // Name returns "openai".

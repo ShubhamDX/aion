@@ -72,11 +72,13 @@ type ManagedLlamaConfig struct {
 
 // ProviderConfig is the configuration for a single LLM provider.
 type ProviderConfig struct {
-	APIKey         string        `yaml:"api_key"`
-	BaseURL        string        `yaml:"base_url,omitempty"`
-	MantleBaseURL  string        `yaml:"mantle_base_url,omitempty"`
-	Region         string        `yaml:"region,omitempty"`
-	ProjectID      string        `yaml:"project_id,omitempty"`
+	APIKey        string `yaml:"api_key"`
+	BaseURL       string `yaml:"base_url,omitempty"`
+	MantleBaseURL string `yaml:"mantle_base_url,omitempty"`
+	Region        string `yaml:"region,omitempty"`
+	ProjectID     string `yaml:"project_id,omitempty"`
+	// CredentialMode opts into cloud identity. An empty value retains static
+	// credentials, except for Bedrock's existing AWS SDK discovery behavior.
 	CredentialMode string        `yaml:"credential_mode,omitempty"`
 	RoleARN        string        `yaml:"role_arn,omitempty"`
 	ExternalID     string        `yaml:"external_id,omitempty"`

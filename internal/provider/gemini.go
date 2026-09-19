@@ -25,16 +25,20 @@ type GeminiProvider struct {
 }
 
 // NewGemini creates a new Gemini provider from the given configuration.
-func NewGemini(cfg *config.ProviderConfig) *GeminiProvider {
+func NewGemini(cfg *config.ProviderConfig) (*GeminiProvider, error) {
 	base := geminiDefaultBaseURL
 	if cfg.BaseURL != "" {
 		base = strings.TrimRight(cfg.BaseURL, "/")
 	}
+	client, err := cloudHTTPClient("gemini", cfg, base)
+	if err != nil {
+		return nil, err
+	}
 	return &GeminiProvider{
 		apiKey:  cfg.APIKey,
 		baseURL: base,
-		client:  &http.Client{},
-	}
+		client:  client,
+	}, nil
 }
 
 // Name returns "gemini".
