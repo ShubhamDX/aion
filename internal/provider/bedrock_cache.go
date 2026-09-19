@@ -30,6 +30,10 @@ func bedrockCacheText(message types.Message) (any, bool) {
 }
 
 func translateBedrockCacheMessages(source []types.Message, system any) (any, []anthropicMsg) {
+	return translateClaudeCacheMessages(source, system)
+}
+
+func translateClaudeCacheMessages(source []types.Message, system any) (any, []anthropicMsg) {
 	// Translate marked messages independently so preceding merged tool results
 	// cannot shift the checkpoint onto a different message.
 	var result []anthropicMsg

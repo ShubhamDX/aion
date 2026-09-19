@@ -43,6 +43,7 @@ func (p *GeminiProvider) Name() string { return "gemini" }
 // Send sends a non-streaming chat completion request to Gemini.
 func (p *GeminiProvider) Send(ctx context.Context, req *types.ChatCompletionRequest, model string) (*Response, error) {
 	payload := upstreamPayload(req, model, false)
+	payload.Messages = withoutTextCacheControls(payload.Messages)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -80,6 +81,7 @@ func (p *GeminiProvider) Send(ctx context.Context, req *types.ChatCompletionRequ
 // SendStream sends a streaming chat completion request to Gemini and returns a StreamReader.
 func (p *GeminiProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
 	payload := upstreamPayload(req, model, true)
+	payload.Messages = withoutTextCacheControls(payload.Messages)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
