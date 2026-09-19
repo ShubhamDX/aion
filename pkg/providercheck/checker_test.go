@@ -2,12 +2,20 @@ package providercheck
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/ShubhamDX/aion/internal/config"
 )
+
+func TestCheckerClassifiesCloudCredentialFailure(t *testing.T) {
+	code, message := classifyError(errors.New("vertex: do request: cloud credential unavailable"))
+	if code != "authentication_failed" || message != "The configured cloud identity could not provide a usable token." {
+		t.Fatalf("code=%q message=%q", code, message)
+	}
+}
 
 func TestCheckerDiscardsOutputAndReportsTier(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
