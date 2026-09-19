@@ -141,6 +141,7 @@ type ChunkChoice struct {
 type ChunkDelta struct {
 	Role      string     `json:"role,omitempty"`
 	Content   *string    `json:"content,omitempty"` // nullable
+	Refusal   *string    `json:"refusal,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 

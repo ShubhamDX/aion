@@ -78,6 +78,7 @@ type SchemaSettings struct {
 type Message struct {
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content"`
+	Refusal    *string         `json:"refusal,omitempty"`
 	Name       string          `json:"name,omitempty"`
 	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
 	ToolCallID string          `json:"tool_call_id,omitempty"`

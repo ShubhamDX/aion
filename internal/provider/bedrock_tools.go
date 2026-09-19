@@ -10,6 +10,10 @@ import (
 // Translate the caller's tool choice without weakening required or named calls.
 // Requests without a choice retain the provider default.
 func bedrockClaudeToolChoice(req *types.ChatCompletionRequest) (json.RawMessage, error) {
+	return claudeToolChoice(req, "bedrock")
+}
+
+func claudeToolChoice(req *types.ChatCompletionRequest, providerName string) (json.RawMessage, error) {
 	choice := req.ToolChoice
 	if len(choice) == 0 || string(choice) == "null" {
 		return nil, nil
@@ -21,14 +25,14 @@ func bedrockClaudeToolChoice(req *types.ChatCompletionRequest) (json.RawMessage,
 			return json.RawMessage(`{"type":"none"}`), nil
 		case "auto", "required":
 			if len(req.Tools) == 0 {
-				return nil, fmt.Errorf("bedrock: tool_choice requires tools")
+				return nil, fmt.Errorf("%s: tool_choice requires tools", providerName)
 			}
 			if mode == "required" {
 				return json.RawMessage(`{"type":"any"}`), nil
 			}
 			return json.RawMessage(`{"type":"auto"}`), nil
 		default:
-			return nil, fmt.Errorf("bedrock: unsupported tool_choice")
+			return nil, fmt.Errorf("%s: unsupported tool_choice", providerName)
 		}
 	}
 	var named struct {
@@ -38,7 +42,7 @@ func bedrockClaudeToolChoice(req *types.ChatCompletionRequest) (json.RawMessage,
 		} `json:"function"`
 	}
 	if json.Unmarshal(choice, &named) != nil || named.Type != "function" || named.Function.Name == "" {
-		return nil, fmt.Errorf("bedrock: invalid tool_choice")
+		return nil, fmt.Errorf("%s: invalid tool_choice", providerName)
 	}
 	for _, tool := range req.Tools {
 		if tool.Type == "function" && tool.Function.Name == named.Function.Name {
@@ -48,5 +52,5 @@ func bedrockClaudeToolChoice(req *types.ChatCompletionRequest) (json.RawMessage,
 			}{"tool", named.Function.Name})
 		}
 	}
-	return nil, fmt.Errorf("bedrock: tool_choice names an unavailable tool")
+	return nil, fmt.Errorf("%s: tool_choice names an unavailable tool", providerName)
 }

@@ -1,6 +1,6 @@
-// Package providercheck runs an operator-requested, metadata-only connection
-// check against a configured model. It never returns model output or upstream
-// error bodies.
+// Package providercheck runs an operator-requested one-token inference against
+// a configured model. The request may be billed. Results contain metadata only,
+// never model output or upstream error bodies.
 package providercheck
 
 import (
