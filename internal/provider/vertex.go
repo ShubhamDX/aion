@@ -45,7 +45,7 @@ type VertexProvider struct {
 }
 
 // NewVertex creates a new Vertex AI provider from the given configuration.
-func NewVertex(cfg *config.ProviderConfig) *VertexProvider {
+func NewVertex(cfg *config.ProviderConfig) (*VertexProvider, error) {
 	region := vertexDefaultRegion
 	if cfg.Region != "" {
 		region = cfg.Region
@@ -56,13 +56,17 @@ func NewVertex(cfg *config.ProviderConfig) *VertexProvider {
 		base = strings.TrimRight(cfg.BaseURL, "/")
 	}
 
+	client, err := cloudHTTPClient("vertex", cfg, base)
+	if err != nil {
+		return nil, err
+	}
 	return &VertexProvider{
 		bearerToken: cfg.APIKey,
 		projectID:   cfg.ProjectID,
 		region:      region,
 		baseURL:     base,
-		client:      &http.Client{},
-	}
+		client:      client,
+	}, nil
 }
 
 // Name returns "vertex".

@@ -1,4 +1,5 @@
 .PHONY: build test lint run clean docker-build docker-run fmt vet
+.PHONY: test-cloud-offline
 
 BINARY_NAME=aion
 BUILD_DIR=bin
@@ -14,6 +15,9 @@ run: build
 
 test:
 	go test -race -cover ./...
+
+test-cloud-offline:
+	go test -race -count=1 -timeout=90s ./internal/provider ./pkg/app ./pkg/providercheck ./pkg/config -run '^(TestCloud|TestManagedVertex|TestChecker)'
 
 test-cover:
 	go test -race -coverprofile=coverage.out ./...

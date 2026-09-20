@@ -425,11 +425,15 @@ type anthropicStreamReader struct {
 	id         string
 	model      string
 	toolBlocks map[int]types.ToolCall
+	done       bool
 }
 
 // ReadChunk reads the next SSE event from the Anthropic stream and translates
 // it to an OpenAI-compatible ChatCompletionChunk.
 func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) {
+	if s.done {
+		return nil, io.EOF
+	}
 	for {
 		eventType, data, err := s.readSSEEvent()
 		if err != nil {
@@ -529,7 +533,11 @@ func (s *anthropicStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) 
 			}, nil
 
 		case "message_stop":
+			s.done = true
 			return nil, io.EOF
+
+		case "error":
+			return nil, fmt.Errorf("anthropic stream: provider returned a stream error")
 
 		default:
 			// Skip unknown event types (ping, content_block_stop, etc.)
@@ -625,7 +633,7 @@ func (s *anthropicStreamReader) readSSEEvent() (eventType string, data []byte, e
 		line, readErr := s.reader.ReadString('\n')
 		if readErr != nil {
 			if readErr == io.EOF {
-				return "", nil, io.EOF
+				return "", nil, io.ErrUnexpectedEOF
 			}
 			return "", nil, fmt.Errorf("anthropic stream: read line: %w", readErr)
 		}

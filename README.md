@@ -55,7 +55,7 @@ AION records routing, cost and model decisions so teams can measure savings agai
 | **OpenAI** | OpenAI-compatible | Bearer token |
 | **Anthropic** | Messages API (translated internally) | API key |
 | **AWS Bedrock** | Anthropic Messages via Bedrock | Bearer token |
-| **Google Vertex AI (Claude)** | Anthropic Messages via Vertex | Bearer token |
+| **Google Vertex AI (Claude)** | Anthropic Messages via Vertex | Static bearer or Google ADC |
 | **Google Gemini** | OpenAI-compatible | Bearer token |
 | **xAI Grok** | OpenAI-compatible | Bearer token |
 | **OpenRouter** | OpenAI-compatible | Bearer token |
