@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/ShubhamDX/aion/internal/types"
 	"net/http"
 	"net/http/httptest"
@@ -108,7 +109,7 @@ func TestBedrockSendDecodesInvokeEnvelope(t *testing.T) {
 			}))
 			defer upstream.Close()
 			p := &BedrockProvider{baseURL: upstream.URL, client: upstream.Client(), bearerToken: "test-only"}
-			resp, err := p.Send(context.Background(), &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: "test"}}}, "fixture-model")
+			response, err := p.Send(context.Background(), &types.ChatCompletionRequest{Messages: []types.Message{{Role: "user", Content: json.RawMessage(`"test"`)}}}, "fixture-model")
 			if tc.wantError {
 				if err == nil {
 					t.Fatal("malformed envelope accepted")
@@ -118,6 +119,7 @@ func TestBedrockSendDecodesInvokeEnvelope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			resp := response.ChatResponse
 			if resp.Model != "fixture-model" || len(resp.Choices) != 1 || resp.Choices[0].Message.ContentString() != "ok" || resp.Usage.PromptTokens != 9 || resp.Usage.CompletionTokens != 1 {
 				t.Fatalf("lost content or usage: %+v", resp)
 			}
