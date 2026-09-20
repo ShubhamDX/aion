@@ -210,10 +210,15 @@ func parseBedrockResponse(body []byte, model string) (*types.ChatCompletionRespo
 	}
 
 	switch {
+	case probe.Choices != nil && probe.Content != nil:
+		return nil, fmt.Errorf("ambiguous response shape (both content and choices)")
 	case probe.Choices != nil:
 		var chatResp types.ChatCompletionResponse
 		if err := json.Unmarshal(body, &chatResp); err != nil {
 			return nil, fmt.Errorf("decode OpenAI-style response: %w", err)
+		}
+		if len(chatResp.Choices) == 0 {
+			return nil, fmt.Errorf("OpenAI-style response has no choices")
 		}
 		if chatResp.Model == "" {
 			chatResp.Model = model
@@ -224,12 +229,15 @@ func parseBedrockResponse(body []byte, model string) (*types.ChatCompletionRespo
 		if err := json.Unmarshal(body, &aResp); err != nil {
 			return nil, fmt.Errorf("decode Anthropic-style response: %w", err)
 		}
+		if aResp.Content == nil {
+			return nil, fmt.Errorf("Anthropic-style response has null content")
+		}
 		if aResp.Model == "" {
 			aResp.Model = model
 		}
 		return translateAnthropicResponse(&aResp), nil
 	default:
-		return nil, fmt.Errorf("unrecognized response shape (no top-level \"content\" or \"choices\" field): %s", string(body))
+		return nil, fmt.Errorf("unrecognized response shape (no top-level content or choices field)")
 	}
 }
 
