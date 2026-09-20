@@ -180,6 +180,12 @@ func (h *Handler) handleStream(
 		}
 	}
 
+	// A terminal marker alone must not make a failed upstream look successful.
+	if readErr {
+		if _, err := fmt.Fprint(w, "data: {\"error\":{\"message\":\"Upstream stream interrupted\",\"type\":\"upstream_stream_error\",\"code\":\"upstream_stream_error\"}}\n\n"); err != nil {
+			deliveryFailed = true
+		}
+	}
 	// Terminate the SSE stream.
 	if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
 		deliveryFailed = true

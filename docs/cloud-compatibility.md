@@ -48,7 +48,8 @@ release must include this change before these modes can be used in a bundle.
 
 Set `credential_mode: google_adc` on `vertex` or Vertex-compatible `gemini`.
 The official Google Go auth library discovers Application Default Credentials,
-requests the cloud-platform scope and refreshes cached tokens before expiry.
+requests the cloud-platform scope and refreshes cached tokens. Some credential
+sources refresh in the background while an unexpired token remains usable.
 ADC quota project headers are preserved. The configured `project_id` remains
 the inference project; credential discovery does not replace that value.
 
@@ -88,11 +89,13 @@ Static modes retain their existing endpoint and key behavior and do not gain
 automatic refresh.
 
 Normal and streaming requests use the same credential transport. Failed token
-refresh stops inference with a sanitized credential error. AION does not retry
+acquisition without a usable unexpired token stops inference with a sanitized
+credential error. A background refresh failure may leave a still-valid token
+usable until expiry; the SDK owns that early-refresh policy. AION does not retry
 an inference after a 401 or switch to a static key. Identity SDKs may retry
-token acquisition within the request context. The caller's deadline also
-bounds credential acquisition. Google token HTTP requests have a 15-second
-client timeout.
+foreground token acquisition within the request context. The caller's deadline
+bounds foreground acquisition; SDK background refresh can outlive that request.
+Google token HTTP requests have a 15-second client timeout.
 
 Compatible streaming callers can set `stream_options.include_usage: true`.
 Native Claude usage arrives in separate input/output chunks, so cost consumers
@@ -158,3 +161,21 @@ or trial account still invokes the provider when it generates output.
 - [Azure SDK unit testing and mocking](https://learn.microsoft.com/en-us/dotnet/azure/sdk/unit-testing-mocking)
 - [Azure SDK test proxy](https://github.com/Azure/azure-sdk-tools/blob/main/tools/test-proxy/Azure.Sdk.Tools.TestProxy/README.md)
 - [API Management mock-response policy](https://learn.microsoft.com/en-us/azure/api-management/mock-response-policy)
+
+## Offline failure matrix
+
+`make test-cloud-offline` includes the adapter, credential SDK and gateway
+regressions. It uses only synthetic responses and includes 401, 403, 429,
+500, 503, deadlines, missing stream terminators and explicit provider stream
+errors. Failed inference is not retried, including responses with `Retry-After`.
+
+The compatible stream reader requires `[DONE]`; native Claude requires
+`message_stop`. A disconnect before that marker returns an error, including
+when a finish-reason chunk has already arrived. Chat Completions emits an SSE
+error before its final marker and does not establish next-turn cache warmth.
+These shared reader checks also apply to other providers using those readers.
+
+Real Google and Azure SDK tests exercise token HTTP parsing, expired-token
+rejection, concurrent reacquisition, identity rejection and cancellation.
+Google's file credentials can refresh a still-valid token asynchronously. The
+suite does not assume that all early refreshes block inference.
