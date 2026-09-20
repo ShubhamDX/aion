@@ -11,8 +11,10 @@ type ChatCompletionRequest struct {
 	TopP             *float64         `json:"top_p,omitempty"`
 	N                *int             `json:"n,omitempty"`
 	Stream           bool             `json:"stream,omitempty"`
+	StreamOptions    *StreamOptions   `json:"stream_options,omitempty"`
 	Stop             json.RawMessage  `json:"stop,omitempty"` // string or []string
 	MaxTokens        *int             `json:"max_tokens,omitempty"`
+	ReasoningEffort  string           `json:"reasoning_effort,omitempty"`
 	PresencePenalty  *float64         `json:"presence_penalty,omitempty"`
 	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
 	LogitBias        map[string]int   `json:"logit_bias,omitempty"`
@@ -28,6 +30,11 @@ type ChatCompletionRequest struct {
 	// provider path reads it to mutate a request yet. nil leaves behavior
 	// unchanged.
 	SchemaSettings *SchemaSettings `json:"-"`
+}
+
+// StreamOptions requests provider usage in a compatible streaming response.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // SchemaSettings is the neutral, provider-agnostic carrier for resolved
@@ -77,6 +84,7 @@ type SchemaSettings struct {
 type Message struct {
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content"`
+	Refusal    *string         `json:"refusal,omitempty"`
 	Name       string          `json:"name,omitempty"`
 	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
 	ToolCallID string          `json:"tool_call_id,omitempty"`

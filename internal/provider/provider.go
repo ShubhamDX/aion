@@ -70,6 +70,7 @@ func upstreamPayload(req *types.ChatCompletionRequest, model string, stream bool
 // upstreamPayload produced it (no partial schema, no clobber).
 func openAINativePayload(req *types.ChatCompletionRequest, model string, stream bool) (types.ChatCompletionRequest, bool) {
 	payload := upstreamPayload(req, model, stream)
+	payload.Messages = withoutTextCacheControls(payload.Messages)
 	ss := req.SchemaSettings
 	if ss == nil || ss.Mode != types.ProviderSchemaModeProviderNative || ss.SchemaBody == nil {
 		return payload, false

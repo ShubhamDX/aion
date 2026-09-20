@@ -39,6 +39,12 @@ func (s sendableStub) SendStream(context.Context, *types.ChatCompletionRequest, 
 	return nil, nil
 }
 
+type fixedTierClassifier struct{ tier types.Tier }
+
+func (c fixedTierClassifier) Classify(*types.ChatCompletionRequest) (types.Tier, float64, map[string]float64) {
+	return c.tier, 1, nil
+}
+
 // twoProviderHandler registers two providers (openai tier-1, bedrock tier-2) so a
 // PreRequest route override can move the final route to a different provider.
 func twoProviderHandler(t *testing.T) *Handler {
@@ -54,6 +60,89 @@ func twoProviderHandler(t *testing.T) *Handler {
 	reg.Register(sendableStub{name: "openai"})
 	reg.Register(sendableStub{name: "bedrock"})
 	return &Handler{router: router.NewRouter(cfg, nil), registry: reg, pricing: pricing.NewTable(cfg.Providers)}
+}
+
+func fallbackTierHandler(t *testing.T) *Handler {
+	t.Helper()
+	cfg := &config.Config{}
+	cfg.Providers.OpenAI = &config.ProviderConfig{
+		Models: []config.ModelConfig{
+			{ID: "gpt-cheap", Tier: 1, InputPricePer1M: 1, OutputPricePer1M: 2},
+			{ID: "gpt-premium", Tier: 3, InputPricePer1M: 10, OutputPricePer1M: 30},
+		},
+	}
+	reg := provider.NewRegistry()
+	reg.Register(sendableStub{name: "openai"})
+	return NewHandler(
+		fixedTierClassifier{tier: types.Tier2},
+		router.NewRouter(cfg, nil),
+		reg,
+		nil,
+		pricing.NewTable(cfg.Providers),
+		nil,
+	)
+}
+
+func TestTierFallbackReportsSelectedTierOnBothIngresses(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+		run  func(*Handler, http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "openai",
+			path: "/v1/chat/completions",
+			body: `{"model":"aion-auto","messages":[{"role":"user","content":"summarize this"}]}`,
+			run:  (*Handler).ChatCompletion,
+		},
+		{
+			name: "anthropic",
+			path: "/v1/messages",
+			body: `{"model":"aion-auto","max_tokens":16,"messages":[{"role":"user","content":"summarize this"}]}`,
+			run:  (*Handler).AnthropicMessages,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := fallbackTierHandler(t)
+			var preRequestTier, postRouteTier types.Tier
+			h.SetGatewayHooks(&types.GatewayHooks{
+				PreRequest: func(in types.PreRequestInput) types.PreRequestDecision {
+					preRequestTier = in.Tier
+					if in.RoutedModel != "gpt-premium" {
+						t.Errorf("pre-request model = %q, want gpt-premium", in.RoutedModel)
+					}
+					return types.PreRequestDecision{Verdict: types.VerdictAllow}
+				},
+				ResolveSchemaSettings: func(in types.PostRouteInput) *types.SchemaSettings {
+					postRouteTier = in.Tier
+					return nil
+				},
+			})
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			tt.run(h, w, r)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("X-AION-Model"); got != "gpt-premium" {
+				t.Fatalf("X-AION-Model = %q, want gpt-premium", got)
+			}
+			if got := w.Header().Get("X-AION-Tier"); got != "3" {
+				t.Fatalf("X-AION-Tier = %q, want 3", got)
+			}
+			if preRequestTier != types.Tier3 {
+				t.Fatalf("pre-request tier = %d, want 3", preRequestTier)
+			}
+			if postRouteTier != types.Tier3 {
+				t.Fatalf("post-route tier = %d, want 3", postRouteTier)
+			}
+		})
+	}
 }
 
 // The post-route seam must receive the FINAL provider/model after a route

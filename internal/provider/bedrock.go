@@ -35,23 +35,26 @@ const (
 type bedrockRequest struct {
 	AnthropicVersion string          `json:"anthropic_version"`
 	Messages         []anthropicMsg  `json:"messages"`
-	System           string          `json:"system,omitempty"`
+	System           any             `json:"system,omitempty"`
 	MaxTokens        int             `json:"max_tokens"`
 	Stream           bool            `json:"-"`
 	Tools            []anthropicTool `json:"tools,omitempty"`
+	ToolChoice       json.RawMessage `json:"tool_choice,omitempty"`
 	Temperature      *float64        `json:"temperature,omitempty"`
 	TopP             *float64        `json:"top_p,omitempty"`
 	Stop             json.RawMessage `json:"stop_sequences,omitempty"`
 }
 
-// BedrockProvider implements Provider for Claude models on AWS Bedrock.
+// BedrockProvider implements Provider for configured AWS Bedrock models.
 type BedrockProvider struct {
-	bearerToken string
-	credentials aws.CredentialsProvider
-	signer      *v4.Signer
-	region      string
-	baseURL     string
-	client      *http.Client
+	bearerToken      string
+	credentials      aws.CredentialsProvider
+	signer           *v4.Signer
+	region           string
+	baseURL          string
+	mantleBaseURL    string
+	reasoningEfforts map[string]string
+	client           *http.Client
 }
 
 // NewBedrock creates a new Bedrock provider from the given configuration.
@@ -70,6 +73,20 @@ func NewBedrock(cfg *config.ProviderConfig) (*BedrockProvider, error) {
 		region:  region,
 		baseURL: base,
 		client:  &http.Client{},
+	}
+	provider.mantleBaseURL = fmt.Sprintf("https://bedrock-mantle.%s.api.aws/openai/v1", region)
+	if cfg.MantleBaseURL != "" {
+		provider.mantleBaseURL = strings.TrimRight(cfg.MantleBaseURL, "/")
+	}
+	provider.reasoningEfforts = make(map[string]string)
+	for _, model := range cfg.Models {
+		if model.ReasoningEffort == "" {
+			continue
+		}
+		if !isBedrockMantleModel(model.ID) || !validReasoningEffort(model.ReasoningEffort) {
+			return nil, fmt.Errorf("bedrock: invalid reasoning_effort for model %s", model.ID)
+		}
+		provider.reasoningEfforts[model.ID] = model.ReasoningEffort
 	}
 	mode := cfg.CredentialMode
 	if mode == "" {
@@ -116,7 +133,21 @@ func (p *BedrockProvider) Name() string { return "bedrock" }
 
 // Send sends a non-streaming request to Bedrock's invoke endpoint.
 func (p *BedrockProvider) Send(ctx context.Context, req *types.ChatCompletionRequest, model string) (*Response, error) {
+	if isBedrockMantleModel(model) {
+		return p.sendMantle(ctx, req, model)
+	}
+	if isBedrockNovaModel(model) {
+		return p.sendNova(ctx, req, model)
+	}
+	if err := bedrockFormatSupported(req); err != nil {
+		return nil, err
+	}
 	bReq := p.translateRequest(req, false)
+	choice, err := bedrockClaudeToolChoice(req)
+	if err != nil {
+		return nil, err
+	}
+	bReq.ToolChoice = choice
 
 	body, err := json.Marshal(bReq)
 	if err != nil {
@@ -204,7 +235,21 @@ func parseBedrockResponse(body []byte, model string) (*types.ChatCompletionRespo
 
 // SendStream sends a streaming request to Bedrock's invoke-with-response-stream endpoint.
 func (p *BedrockProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
+	if isBedrockMantleModel(model) {
+		return p.streamMantle(ctx, req, model)
+	}
+	if isBedrockNovaModel(model) {
+		return p.streamNova(ctx, req, model)
+	}
+	if err := bedrockFormatSupported(req); err != nil {
+		return nil, err
+	}
 	bReq := p.translateRequest(req, true)
+	choice, err := bedrockClaudeToolChoice(req)
+	if err != nil {
+		return nil, err
+	}
+	bReq.ToolChoice = choice
 
 	body, err := json.Marshal(bReq)
 	if err != nil {
@@ -252,6 +297,9 @@ func (p *BedrockProvider) translateRequest(req *types.ChatCompletionRequest, str
 	}
 
 	bReq.System, bReq.Messages = translateAnthropicMessages(req.Messages)
+	// Preserve explicit cache checkpoints on text messages. The shared legacy
+	// translation flattens content arrays and otherwise drops these markers.
+	bReq.System, bReq.Messages = translateBedrockCacheMessages(req.Messages, bReq.System)
 
 	for _, t := range req.Tools {
 		bReq.Tools = append(bReq.Tools, anthropicTool{
@@ -442,6 +490,9 @@ func (s *bedrockStreamReader) readFrame() (headers map[string]string, payload []
 
 	totalLen := binary.BigEndian.Uint32(prelude[0:4])
 	headersLen := binary.BigEndian.Uint32(prelude[4:8])
+	if totalLen < 16 || totalLen > 16*1024*1024 || headersLen > totalLen-16 {
+		return nil, nil, fmt.Errorf("invalid event frame lengths")
+	}
 
 	// Read the rest: headers + payload + 4-byte message CRC.
 	remaining := make([]byte, totalLen-12)

@@ -24,16 +24,20 @@ type OpenAIProvider struct {
 }
 
 // NewOpenAI creates a new OpenAI provider from the given configuration.
-func NewOpenAI(cfg *config.ProviderConfig) *OpenAIProvider {
+func NewOpenAI(cfg *config.ProviderConfig) (*OpenAIProvider, error) {
 	base := openAIDefaultBaseURL
 	if cfg.BaseURL != "" {
 		base = strings.TrimRight(cfg.BaseURL, "/")
 	}
+	client, err := cloudHTTPClient("openai", cfg, base)
+	if err != nil {
+		return nil, err
+	}
 	return &OpenAIProvider{
 		apiKey:  cfg.APIKey,
 		baseURL: base,
-		client:  &http.Client{},
-	}
+		client:  client,
+	}, nil
 }
 
 // Name returns "openai".
@@ -119,16 +123,20 @@ func (p *OpenAIProvider) setHeaders(req *http.Request) {
 type sseStreamReader struct {
 	reader *bufio.Reader
 	body   io.ReadCloser
+	done   bool
 }
 
 // ReadChunk reads the next chunk from the SSE stream.
 // Returns io.EOF when the stream sends "data: [DONE]".
 func (s *sseStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) {
+	if s.done {
+		return nil, io.EOF
+	}
 	for {
 		line, err := s.reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				return nil, io.EOF
+				return nil, io.ErrUnexpectedEOF
 			}
 			return nil, fmt.Errorf("sse: read line: %w", err)
 		}
@@ -144,15 +152,22 @@ func (s *sseStreamReader) ReadChunk() (*types.ChatCompletionChunk, error) {
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			s.done = true
 			return nil, io.EOF
 		}
 
-		var chunk types.ChatCompletionChunk
+		var chunk struct {
+			types.ChatCompletionChunk
+			Error *json.RawMessage `json:"error"`
+		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return nil, fmt.Errorf("sse: unmarshal chunk: %w", err)
 		}
+		if chunk.Error != nil {
+			return nil, fmt.Errorf("sse: provider returned a stream error")
+		}
 
-		return &chunk, nil
+		return &chunk.ChatCompletionChunk, nil
 	}
 }
 

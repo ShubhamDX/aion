@@ -166,3 +166,29 @@ func TestScrubSessionID(t *testing.T) {
 }
 
 func ptrInt(i int) *int { return &i }
+
+func TestCacheCheckpointMovementPreservesSessionPrefix(t *testing.T) {
+	first := &ChatCompletionRequest{Messages: []Message{
+		{Role: "system", Content: json.RawMessage(`[{"type":"text","text":"rules","cache_control":{"type":"ephemeral"}}]`)},
+		{Role: "user", Content: json.RawMessage(`"question"`)},
+	}}
+	reply := &ChatCompletionResponse{Choices: []Choice{{Message: Message{Role: "assistant", Content: json.RawMessage(`"answer"`)}}}}
+	next := &ChatCompletionRequest{Messages: []Message{
+		{Role: "system", Content: json.RawMessage(`"rules"`)},
+		{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"question","cache_control":{"type":"ephemeral"}}]`)},
+		reply.Choices[0].Message,
+		{Role: "user", Content: json.RawMessage(`"next"`)},
+	}}
+	want := NextCachePrefixMaterial(first, reply)
+	if got := SessionMaterialFromRequest(next, "").CachePrefixMaterialSHA256; got != want {
+		t.Fatal("checkpoint metadata broke prefix continuity")
+	}
+	next.Messages[1].Content = json.RawMessage(`[{"type":"text","text":"changed","cache_control":{"type":"ephemeral"}}]`)
+	if SessionMaterialFromRequest(next, "").CachePrefixMaterialSHA256 == want {
+		t.Fatal("changed text must invalidate warmth")
+	}
+	next.Messages[1].Content = json.RawMessage(`[{"type":"text","text":"question","other_semantics":true}]`)
+	if SessionMaterialFromRequest(next, "").CachePrefixMaterialSHA256 == want {
+		t.Fatal("unknown semantics must remain in fingerprint")
+	}
+}

@@ -1,6 +1,6 @@
-// Package providercheck runs an operator-requested, metadata-only connection
-// check against a configured model. It never returns model output or upstream
-// error bodies.
+// Package providercheck runs an operator-requested one-token inference against
+// a configured model. The request may be billed. Results contain metadata only,
+// never model output or upstream error bodies.
 package providercheck
 
 import (
@@ -57,7 +57,13 @@ func New(cfg *config.Config) (*Checker, error) {
 			checker.models = append(checker.models, Model{Provider: name, ID: model.ID, Tier: model.Tier, CredentialMode: mode})
 		}
 	}
-	add("openai", cfg.Providers.OpenAI, newProvider(cfg.Providers.OpenAI, provider.NewOpenAI))
+	if cfg.Providers.OpenAI != nil {
+		instance, err := provider.NewOpenAI(cfg.Providers.OpenAI)
+		if err != nil {
+			return nil, fmt.Errorf("configure OpenAI check: %w", err)
+		}
+		add("openai", cfg.Providers.OpenAI, instance)
+	}
 	add("anthropic", cfg.Providers.Anthropic, newProvider(cfg.Providers.Anthropic, provider.NewAnthropic))
 	add("openrouter", cfg.Providers.OpenRouter, newProvider(cfg.Providers.OpenRouter, provider.NewOpenRouter))
 	if cfg.Providers.Bedrock != nil {
@@ -67,8 +73,20 @@ func New(cfg *config.Config) (*Checker, error) {
 		}
 		add("bedrock", cfg.Providers.Bedrock, instance)
 	}
-	add("vertex", cfg.Providers.Vertex, newProvider(cfg.Providers.Vertex, provider.NewVertex))
-	add("gemini", cfg.Providers.Gemini, newProvider(cfg.Providers.Gemini, provider.NewGemini))
+	if cfg.Providers.Vertex != nil {
+		instance, err := provider.NewVertex(cfg.Providers.Vertex)
+		if err != nil {
+			return nil, fmt.Errorf("configure Vertex check: %w", err)
+		}
+		add("vertex", cfg.Providers.Vertex, instance)
+	}
+	if cfg.Providers.Gemini != nil {
+		instance, err := provider.NewGemini(cfg.Providers.Gemini)
+		if err != nil {
+			return nil, fmt.Errorf("configure Gemini check: %w", err)
+		}
+		add("gemini", cfg.Providers.Gemini, instance)
+	}
 	add("grok", cfg.Providers.Grok, newProvider(cfg.Providers.Grok, provider.NewGrok))
 	if local := cfg.Providers.Local; local != nil && local.Enabled {
 		checker.providers["local"] = provider.NewLocal(local)
@@ -135,6 +153,8 @@ func (c *Checker) Test(ctx context.Context, providerName, modelID string) Result
 func classifyError(err error) (string, string) {
 	message := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(message, "cloud credential unavailable"):
+		return "authentication_failed", "The configured cloud identity could not provide a usable token."
 	case strings.Contains(message, "401"), strings.Contains(message, "403"), strings.Contains(message, "unauthorized"), strings.Contains(message, "accessdenied"):
 		return "authentication_failed", "The provider rejected the configured credentials or model permission."
 	case strings.Contains(message, "404"), strings.Contains(message, "not found"), strings.Contains(message, "validationexception"):
