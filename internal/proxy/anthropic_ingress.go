@@ -359,6 +359,14 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1b. Reject a structurally invalid request before it reaches routing or
+	// any provider. A missing/empty `model` is NOT rejected here — that is
+	// the documented aion-auto path below and must keep routing normally.
+	if err := validateAnthropicMessages(aReq.Messages); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
 	if aReq.MaxTokens == 0 {
 		aReq.MaxTokens = 4096
 	}
@@ -671,6 +679,38 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			ResponseContents: types.ResponseContentStrings(resp.ChatResponse),
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
+}
+
+// CountTokens implements POST /v1/messages/count_tokens.
+//
+// AION has no access to any provider's exact tokenizer (Bedrock in
+// particular exposes none), so this returns a heuristic estimate using the
+// same chars/4 approximation already trusted for budget pre-checks
+// elsewhere in the gateway (see internal/budget.EstimateInputTokens) —
+// not an exact, provider-verified count. The response's `estimate: true`
+// field makes that explicit so a caller doing exact accounting knows not
+// to treat this as authoritative.
+func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
+	var aReq anthropicIngressRequest
+	if err := json.NewDecoder(r.Body).Decode(&aReq); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
+			"Failed to parse request body: "+err.Error())
+		return
+	}
+
+	if err := validateAnthropicMessages(aReq.Messages); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	req := translateAnthropicToOpenAI(&aReq)
+	inputTokens := budget.EstimateInputTokens(req)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"input_tokens": inputTokens,
+		"estimate":     true,
+	})
 }
 
 // ---------- streaming ----------
