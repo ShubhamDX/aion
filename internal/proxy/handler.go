@@ -175,7 +175,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		switch dec.Verdict {
 		case types.VerdictBlock:
 			w.Header().Set("X-AION-Decision", "block")
-			writeError(w, http.StatusForbidden, "policy_block", decisionMessage(dec, "request blocked by policy"))
+			writePreRequestBlock(w, dec)
 			return
 		case types.VerdictHold:
 			w.Header().Set("X-AION-Decision", "hold")
@@ -259,6 +259,10 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Dispatch -- streaming or non-streaming.
 	if req.Stream {
+		if !h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier) {
+			writeError(w, http.StatusServiceUnavailable, "output_control_unavailable", "Cannot enforce the configured output limit")
+			return
+		}
 		reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
 		if err != nil {
 			writeBudgetError(w, err)
@@ -291,7 +295,10 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// 5d. Output-control seam (OP3b): non-stream only, after context compression
 	// and before dispatch. Nil hook or nil result leaves the request unchanged.
-	h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier)
+	if !h.applyOutputControl(&req, requestID, keyInfo, model, selectedModel, tier) {
+		writeError(w, http.StatusServiceUnavailable, "output_control_unavailable", "Cannot enforce the configured output limit")
+		return
+	}
 
 	reservationDate, reservedCost, err := h.reserveBudget(ctx, &req, selectedModel, keyInfo)
 	if err != nil {
@@ -599,6 +606,23 @@ func decisionMessage(d types.PreRequestDecision, def string) string {
 		return d.Message
 	}
 	return def
+}
+
+func writePreRequestBlock(w http.ResponseWriter, dec types.PreRequestDecision) {
+	if dec.ReasonCode != "" {
+		w.Header().Set("X-AION-Reason-Code", dec.ReasonCode)
+	}
+	if dec.ReasonCode == "budget_exceeded" {
+		writeError(w, http.StatusPaymentRequired, "budget_exceeded", decisionMessage(dec,
+			"This request would exceed the configured AION accounting-window budget."))
+		return
+	}
+	if dec.ReasonCode == "license_unavailable" {
+		writeError(w, http.StatusForbidden, "license_unavailable", decisionMessage(dec,
+			"AION licence enforcement is unavailable. An administrator must restore the licence before requests can continue."))
+		return
+	}
+	writeError(w, http.StatusForbidden, "policy_block", decisionMessage(dec, "request blocked by policy"))
 }
 
 // writeError writes an OpenAI-compatible JSON error response.

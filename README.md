@@ -55,11 +55,22 @@ AION records routing, cost and model decisions so teams can measure savings agai
 | **OpenAI** | OpenAI-compatible | Bearer token |
 | **Anthropic** | Messages API (translated internally) | API key |
 | **AWS Bedrock** | Anthropic Messages via Bedrock | Bearer token |
-| **Google Vertex AI** | Anthropic Messages via Vertex | Bearer token |
+| **Google Vertex AI (Claude)** | Anthropic Messages via Vertex | Static bearer or Google ADC |
 | **Google Gemini** | OpenAI-compatible | Bearer token |
 | **xAI Grok** | OpenAI-compatible | Bearer token |
 | **OpenRouter** | OpenAI-compatible | Bearer token |
 | **Local (llama.cpp)** | llama-server (OpenAI-compatible) | none · always **$0** |
+
+For Azure OpenAI v1, Gemini on Vertex and tests that make no inference calls,
+see [cloud compatibility and offline tests](docs/cloud-compatibility.md).
+These compatible endpoints do not have separate provider slots.
+
+Bedrock and Vertex Claude preserve caller `tool_choice` on normal and streaming requests:
+`auto` stays automatic, `required` becomes native `any`, `none` disables tool use
+and a named function becomes a native named tool choice. An unknown choice or
+unavailable named tool fails before dispatch. Provider rejection never triggers
+an unconstrained retry. A required tool call does not guarantee correct arguments
+or business decisions; callers must validate the returned arguments.
 
 ### Ingress Endpoints
 

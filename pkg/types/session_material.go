@@ -1,8 +1,11 @@
 package types
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"strings"
 )
 
 // SessionSource names where a request's session identity came from. It is a
@@ -120,7 +123,7 @@ func NextCachePrefixMaterial(req *ChatCompletionRequest, resp *ChatCompletionRes
 	next = append(next, governedMessage{
 		Role: "assistant", Content: choice.Message.Content, ToolCalls: choice.Message.ToolCalls,
 	})
-	return digestJSON(next)
+	return sessionMessagesDigest(next)
 }
 
 // cacheablePrefix returns the leading messages that form THIS turn's reusable
@@ -170,7 +173,7 @@ func stableConversationRoot(req *ChatCompletionRequest) (string, bool) {
 	if len(root) == 0 {
 		return "", false
 	}
-	return digestJSON(root), true
+	return sessionMessagesDigest(root), true
 }
 
 // messagesDigest digests a slice of messages over their governed projection.
@@ -182,7 +185,61 @@ func messagesDigest(msgs []Message) string {
 			ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID,
 		})
 	}
-	return digestJSON(g)
+	return sessionMessagesDigest(g)
+}
+
+// Normalize JSON encoding without changing message text or number precision.
+// Clients may escape Unicode differently when replaying an assistant message.
+func sessionMessagesDigest(messages []governedMessage) string {
+	for i := range messages {
+		if len(messages[i].Content) == 0 {
+			continue
+		}
+		if !json.Valid(messages[i].Content) {
+			return ""
+		}
+		decoder := json.NewDecoder(bytes.NewReader(messages[i].Content))
+		decoder.UseNumber()
+		var content any
+		if err := decoder.Decode(&content); err != nil {
+			return ""
+		}
+		// Cache checkpoint placement is transport metadata, not conversation
+		// content. Normalize text-only blocks so adding or moving a checkpoint
+		// cannot break the previous-response prefix chain. Unknown fields and
+		// multimodal blocks retain their full fingerprint.
+		if parts, ok := content.([]any); ok && len(parts) > 0 {
+			var text strings.Builder
+			plain := true
+			for _, part := range parts {
+				block, ok := part.(map[string]any)
+				if !ok || block["type"] != "text" {
+					plain = false
+					break
+				}
+				value, ok := block["text"].(string)
+				if !ok {
+					plain = false
+					break
+				}
+				for key := range block {
+					if key != "type" && key != "text" && key != "cache_control" {
+						plain = false
+					}
+				}
+				text.WriteString(value)
+			}
+			if plain {
+				content = text.String()
+			}
+		}
+		canonical, err := json.Marshal(content)
+		if err != nil {
+			return ""
+		}
+		messages[i].Content = canonical
+	}
+	return digestJSON(messages)
 }
 
 func sha256Hex(s string) string {

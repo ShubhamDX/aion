@@ -20,7 +20,8 @@ type Choice struct {
 
 // PromptTokensDetails carries OpenAI-compatible prompt-token subcounts.
 type PromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
 // Usage reports token consumption for a request. PromptTokens is total input.
@@ -48,6 +49,9 @@ func (u *Usage) NormalizeInputPartition() {
 	}
 	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 && u.CacheReadInputTokens == 0 {
 		u.CacheReadInputTokens = u.PromptTokensDetails.CachedTokens
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CacheWriteTokens > 0 && u.CacheCreationInputTokens == 0 {
+		u.CacheCreationInputTokens = u.PromptTokensDetails.CacheWriteTokens
 	}
 	if u.UncachedInputTokens == 0 {
 		if u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
@@ -137,6 +141,7 @@ type ChunkChoice struct {
 type ChunkDelta struct {
 	Role      string     `json:"role,omitempty"`
 	Content   *string    `json:"content,omitempty"` // nullable
+	Refusal   *string    `json:"refusal,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 

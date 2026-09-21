@@ -25,10 +25,11 @@ const (
 type vertexRequest struct {
 	AnthropicVersion string          `json:"anthropic_version"`
 	Messages         []anthropicMsg  `json:"messages"`
-	System           string          `json:"system,omitempty"`
+	System           any             `json:"system,omitempty"`
 	MaxTokens        int             `json:"max_tokens"`
 	Stream           bool            `json:"stream,omitempty"`
 	Tools            []anthropicTool `json:"tools,omitempty"`
+	ToolChoice       json.RawMessage `json:"tool_choice,omitempty"`
 	Temperature      *float64        `json:"temperature,omitempty"`
 	TopP             *float64        `json:"top_p,omitempty"`
 	Stop             json.RawMessage `json:"stop_sequences,omitempty"`
@@ -44,7 +45,7 @@ type VertexProvider struct {
 }
 
 // NewVertex creates a new Vertex AI provider from the given configuration.
-func NewVertex(cfg *config.ProviderConfig) *VertexProvider {
+func NewVertex(cfg *config.ProviderConfig) (*VertexProvider, error) {
 	region := vertexDefaultRegion
 	if cfg.Region != "" {
 		region = cfg.Region
@@ -55,13 +56,17 @@ func NewVertex(cfg *config.ProviderConfig) *VertexProvider {
 		base = strings.TrimRight(cfg.BaseURL, "/")
 	}
 
+	client, err := cloudHTTPClient("vertex", cfg, base)
+	if err != nil {
+		return nil, err
+	}
 	return &VertexProvider{
 		bearerToken: cfg.APIKey,
 		projectID:   cfg.ProjectID,
 		region:      region,
 		baseURL:     base,
-		client:      &http.Client{},
-	}
+		client:      client,
+	}, nil
 }
 
 // Name returns "vertex".
@@ -69,7 +74,12 @@ func (p *VertexProvider) Name() string { return "vertex" }
 
 // Send sends a non-streaming request to Vertex AI's rawPredict endpoint.
 func (p *VertexProvider) Send(ctx context.Context, req *types.ChatCompletionRequest, model string) (*Response, error) {
+	choice, err := vertexToolChoice(req)
+	if err != nil {
+		return nil, err
+	}
 	vReq := p.translateRequest(req, false)
+	vReq.ToolChoice = choice
 
 	body, err := json.Marshal(vReq)
 	if err != nil {
@@ -114,7 +124,12 @@ func (p *VertexProvider) Send(ctx context.Context, req *types.ChatCompletionRequ
 
 // SendStream sends a streaming request to Vertex AI's streamRawPredict endpoint.
 func (p *VertexProvider) SendStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (StreamReader, error) {
+	choice, err := vertexToolChoice(req)
+	if err != nil {
+		return nil, err
+	}
 	vReq := p.translateRequest(req, true)
+	vReq.ToolChoice = choice
 
 	body, err := json.Marshal(vReq)
 	if err != nil {
@@ -161,6 +176,7 @@ func (p *VertexProvider) translateRequest(req *types.ChatCompletionRequest, stre
 	}
 
 	vReq.System, vReq.Messages = translateAnthropicMessages(req.Messages)
+	vReq.System, vReq.Messages = translateClaudeCacheMessages(req.Messages, vReq.System)
 
 	for _, t := range req.Tools {
 		vReq.Tools = append(vReq.Tools, anthropicTool{
@@ -171,6 +187,16 @@ func (p *VertexProvider) translateRequest(req *types.ChatCompletionRequest, stre
 	}
 
 	return vReq
+}
+
+func vertexToolChoice(req *types.ChatCompletionRequest) (json.RawMessage, error) {
+	if req.ResponseFormat != nil && req.ResponseFormat.Type != "" && req.ResponseFormat.Type != "text" {
+		return nil, fmt.Errorf("vertex: response_format is not supported on this model transport")
+	}
+	if req.SchemaSettings != nil && req.SchemaSettings.MustEmitNative {
+		return nil, fmt.Errorf("vertex: mandatory native schema is not supported on this model transport")
+	}
+	return claudeToolChoice(req, "vertex")
 }
 
 func (p *VertexProvider) setHeaders(req *http.Request) {

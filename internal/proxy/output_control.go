@@ -13,9 +13,9 @@ func (h *Handler) applyOutputControl(
 	requestedModel string,
 	selectedModel *router.ModelOption,
 	tier types.Tier,
-) {
+) bool {
 	if req == nil || selectedModel == nil || h.hooks == nil || h.hooks.ApplyOutputControl == nil {
-		return
+		return true
 	}
 	res := h.hooks.ApplyOutputControl(types.OutputControlInput{
 		PostRouteInput: types.PostRouteInput{
@@ -30,7 +30,10 @@ func (h *Handler) applyOutputControl(
 		Request: req,
 	})
 	if res == nil {
-		return
+		return true
+	}
+	if res.Block {
+		return false
 	}
 	if res.Messages != nil {
 		req.Messages = res.Messages
@@ -39,4 +42,5 @@ func (h *Handler) applyOutputControl(
 		cap := *res.MaxTokens
 		req.MaxTokens = &cap
 	}
+	return true
 }

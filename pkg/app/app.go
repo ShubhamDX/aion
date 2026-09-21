@@ -106,7 +106,13 @@ func Build(opts Options) (*App, error) {
 	registry := provider.NewRegistry()
 
 	if cfg.Providers.OpenAI != nil {
-		registry.Register(provider.NewOpenAI(cfg.Providers.OpenAI))
+		instance, err := provider.NewOpenAI(cfg.Providers.OpenAI)
+		if err != nil {
+			cancel()
+			store.Close()
+			return nil, fmt.Errorf("openai provider: %w", err)
+		}
+		registry.Register(instance)
 	}
 	if cfg.Providers.Anthropic != nil {
 		registry.Register(provider.NewAnthropic(cfg.Providers.Anthropic))
@@ -124,10 +130,22 @@ func Build(opts Options) (*App, error) {
 		registry.Register(bedrockProvider)
 	}
 	if cfg.Providers.Vertex != nil {
-		registry.Register(provider.NewVertex(cfg.Providers.Vertex))
+		instance, err := provider.NewVertex(cfg.Providers.Vertex)
+		if err != nil {
+			cancel()
+			store.Close()
+			return nil, fmt.Errorf("vertex provider: %w", err)
+		}
+		registry.Register(instance)
 	}
 	if cfg.Providers.Gemini != nil {
-		registry.Register(provider.NewGemini(cfg.Providers.Gemini))
+		instance, err := provider.NewGemini(cfg.Providers.Gemini)
+		if err != nil {
+			cancel()
+			store.Close()
+			return nil, fmt.Errorf("gemini provider: %w", err)
+		}
+		registry.Register(instance)
 	}
 	if cfg.Providers.Grok != nil {
 		registry.Register(provider.NewGrok(cfg.Providers.Grok))

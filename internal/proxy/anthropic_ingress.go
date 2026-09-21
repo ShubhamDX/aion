@@ -128,6 +128,9 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 				}
 				if combined != "" {
 					b, _ := json.Marshal(combined)
+					if hasTextCacheCheckpoint(aReq.System) {
+						b = aReq.System
+					}
 					oReq.Messages = append(oReq.Messages, types.Message{
 						Role:    "system",
 						Content: b,
@@ -228,7 +231,7 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 				}
 				allText += block.Text
 			}
-			if isTextBlocks && allText != "" {
+			if isTextBlocks && allText != "" && !hasTextCacheCheckpoint(m.Content) {
 				b, _ := json.Marshal(allText)
 				msg.Content = b
 			}
@@ -250,6 +253,28 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 	}
 
 	return oReq
+}
+
+// Preserve explicit text checkpoints across the protocol boundary. Unmarked
+// requests keep their existing flattened representation.
+func hasTextCacheCheckpoint(content json.RawMessage) bool {
+	var blocks []struct {
+		Type         string          `json:"type"`
+		CacheControl json.RawMessage `json:"cache_control"`
+	}
+	if json.Unmarshal(content, &blocks) != nil {
+		return false
+	}
+	found := false
+	for _, block := range blocks {
+		if block.Type != "text" {
+			return false
+		}
+		if len(block.CacheControl) > 0 && string(block.CacheControl) != "null" {
+			found = true
+		}
+	}
+	return found
 }
 
 // extractToolResultContent extracts a string from a tool_result content field,
@@ -534,6 +559,10 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 7. Dispatch: streaming or non-streaming.
 	if req.Stream {
+		if !h.applyOutputControl(req, requestID, keyInfo, model, selectedModel, tier) {
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "Cannot enforce the configured output limit")
+			return
+		}
 		reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
 		if err != nil {
 			writeAnthropicBudgetError(w, err)
@@ -562,7 +591,10 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 6d. Output-control seam (OP3b): non-stream only, after context compression
 	// and before dispatch. Nil hook or nil result leaves the request unchanged.
-	h.applyOutputControl(req, requestID, keyInfo, model, selectedModel, tier)
+	if !h.applyOutputControl(req, requestID, keyInfo, model, selectedModel, tier) {
+		writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "Cannot enforce the configured output limit")
+		return
+	}
 
 	reservationDate, reservedCost, err := h.reserveBudget(ctx, req, selectedModel, keyInfo)
 	if err != nil {
@@ -879,6 +911,8 @@ func (h *Handler) handleAnthropicStream(
 	w.WriteHeader(http.StatusOK)
 
 	// Emit message_start event.
+	delivery := &streamDeliveryWriter{ResponseWriter: w}
+	w = delivery
 	msgStart := map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
@@ -900,6 +934,7 @@ func (h *Handler) handleAnthropicStream(
 	var totalUsage types.Usage
 	var lastFinishReason string
 	streamComplete := false
+	var prefix streamPrefix
 
 	// Response-action governance (optional): identical discipline to the OpenAI
 	// path. At the first tool-call fragment, buffer the whole tail (text, usage,
@@ -929,6 +964,7 @@ func (h *Handler) handleAnthropicStream(
 		if chunk.Usage != nil {
 			totalUsage.MergeFrom(*chunk.Usage)
 		}
+		prefix.add(chunk)
 
 		if governTools && !buffering && chunkHasToolCall(chunk) {
 			buffering = true
@@ -949,7 +985,6 @@ func (h *Handler) handleAnthropicStream(
 			// Track finish reason.
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				lastFinishReason = *choice.FinishReason
-				continue
 			}
 
 			sseState.writeChoice(w, flusher, choice)
@@ -961,11 +996,13 @@ func (h *Handler) handleAnthropicStream(
 	if governTools && buffering {
 		switch {
 		case readErr:
+			prefix.invalidate()
 			sseState.writeTextBlock(w, flusher, `{"aion_action":{"action":"block","reason_code":"upstream_stream_error","calls":[]}}`)
 			lastFinishReason = "stop"
 		default:
 			proposed, perr := toolBuf.proposed()
 			if perr != nil {
+				prefix.invalidate()
 				sseState.writeTextBlock(w, flusher, string(rawStringUnquote(envelopeContentJSON(failClosedEnvelope(toolBuf.failedReasonCode())))))
 				lastFinishReason = "stop"
 			} else {
@@ -982,13 +1019,11 @@ func (h *Handler) handleAnthropicStream(
 				if decision.AllAllowedValidated(len(proposed)) {
 					for _, c := range toolBuf.bufferedChunks {
 						for _, choice := range c.Choices {
-							if choice.FinishReason != nil && *choice.FinishReason != "" {
-								continue
-							}
 							sseState.writeChoice(w, flusher, choice)
 						}
 					}
 				} else {
+					prefix.invalidate()
 					env := string(rawStringUnquote(envelopeContentJSON(buildActionEnvelope(proposed, decision))))
 					sseState.writeTextBlock(w, flusher, env)
 					lastFinishReason = "stop"
@@ -1053,14 +1088,15 @@ func (h *Handler) handleAnthropicStream(
 	}
 	h.settleBudget(ctx, keyInfo, reservationDate, reservedCost, settledCost)
 
-	// Gateway post-response hook (optional). Streamed content is not reassembled,
+	sessionMaterial.NextCachePrefixMaterialSHA256 = prefix.digest(req, streamComplete && !readErr && !delivery.failed && ctx.Err() == nil)
+	// Gateway post-response hook (optional). Streamed content is not exposed,
 	// so the output digest is empty (correlation-only output anchor). Dispatched
 	// ASYNCHRONOUSLY (same contract as the non-stream paths): the hook cannot delay
 	// stream completion, cannot crash the proxy on panic, and is drained on
 	// shutdown.
 	if h.hooks != nil && h.hooks.PostResponse != nil {
-		// Streaming: next-turn prefix digest stays "" (stream not buffered) and
-		// ResponseContents stays nil (an embedding product safe-degrades).
+		// Only a bounded, completed response contributes next-turn warmth.
+		// ResponseContents remains nil; raw response text is not exposed to hooks.
 		h.dispatchPostResponse(postResponseInputWithUsage(types.PostResponseInput{
 			RequestID:       requestID,
 			PrincipalID:     keyIDFromInfo(keyInfo),
