@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/ShubhamDX/aion/internal/types"
@@ -25,15 +26,26 @@ func validateMessages(messages []types.Message) error {
 		if m.Role == "" {
 			return fmt.Errorf("messages[%d].role is required", i)
 		}
+		// An assistant turn that only issues tool calls carries no content in
+		// the OpenAI wire format; every other message, including a tool-result
+		// reply, must have some.
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 && len(m.Content) == 0 {
+			continue
+		}
 		if len(m.Content) == 0 {
 			return fmt.Errorf("messages[%d].content is required", i)
+		}
+		if !validContentShape(m.Content) {
+			return fmt.Errorf("messages[%d].content must be a string or an array of content parts, got %s", i, m.Content)
 		}
 	}
 	return nil
 }
 
 // validateAnthropicMessages is the same structural check for the Anthropic
-// ingress message shape, applied before translateAnthropicToOpenAI.
+// ingress message shape, applied before translateAnthropicToOpenAI. Anthropic
+// represents tool use as a content block inside the array itself, so unlike
+// the OpenAI shape there is no role/tool_calls exception here.
 func validateAnthropicMessages(messages []anthropicIngressMsg) error {
 	if len(messages) == 0 {
 		return ErrNoMessages
@@ -45,6 +57,25 @@ func validateAnthropicMessages(messages []anthropicIngressMsg) error {
 		if len(m.Content) == 0 {
 			return fmt.Errorf("messages[%d].content is required", i)
 		}
+		if !validContentShape(m.Content) {
+			return fmt.Errorf("messages[%d].content must be a string or an array of content parts, got %s", i, m.Content)
+		}
 	}
 	return nil
+}
+
+// validContentShape reports whether content decodes to a JSON string or a
+// non-empty JSON array of content parts, the only two shapes either wire
+// format uses. A bare null, number, boolean, or object is not a usable
+// message content shape and would otherwise reach the provider unexamined.
+func validContentShape(content json.RawMessage) bool {
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return true
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(content, &parts); err == nil {
+		return len(parts) > 0
+	}
+	return false
 }
