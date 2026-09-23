@@ -159,13 +159,23 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 			}
 			if json.Unmarshal(blocks[0], &firstBlock) == nil && firstBlock.Type == "tool_result" {
 				// Each tool_result block becomes a separate tool-role message.
+				// A tool_result turn can carry trailing text blocks alongside
+				// the results (e.g. "given the result above, do X") — those
+				// must not be dropped, or they vanish from both token
+				// counting and the actual request sent to the provider.
+				var trailingText string
 				for _, raw := range blocks {
 					var tr struct {
 						Type      string          `json:"type"`
 						ToolUseID string          `json:"tool_use_id"`
 						Content   json.RawMessage `json:"content"`
+						Text      string          `json:"text"`
 					}
-					if json.Unmarshal(raw, &tr) == nil && tr.Type == "tool_result" {
+					if json.Unmarshal(raw, &tr) != nil {
+						continue
+					}
+					switch tr.Type {
+					case "tool_result":
 						content := extractToolResultContent(tr.Content)
 						b, _ := json.Marshal(content)
 						oReq.Messages = append(oReq.Messages, types.Message{
@@ -173,7 +183,16 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 							Content:    b,
 							ToolCallID: tr.ToolUseID,
 						})
+					case "text":
+						trailingText += tr.Text
 					}
+				}
+				if trailingText != "" {
+					b, _ := json.Marshal(trailingText)
+					oReq.Messages = append(oReq.Messages, types.Message{
+						Role:    m.Role,
+						Content: b,
+					})
 				}
 				continue
 			}
@@ -381,6 +400,14 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&aReq); err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
 			"Failed to parse request body: "+err.Error())
+		return
+	}
+
+	// 1b. Reject a structurally invalid request before it reaches routing or
+	// any provider. A missing/empty `model` is NOT rejected here — that is
+	// the documented aion-auto path below and must keep routing normally.
+	if err := validateAnthropicMessages(aReq.Messages); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 
@@ -703,6 +730,42 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			ResponseContents: types.ResponseContentStrings(resp.ChatResponse),
 		}, resp.ChatResponse.Usage, costBreakdown))
 	}
+}
+
+// CountTokens implements POST /v1/messages/count_tokens.
+//
+// AION has no access to any provider's exact tokenizer (Bedrock in
+// particular exposes none), so this returns a chars/4 heuristic, not an
+// exact count. The response's `estimate: true` field makes that explicit
+// so a caller doing exact accounting knows not to treat it as
+// authoritative.
+//
+// This is not the number the budget path reserves against: estimatedCost
+// sizes a request by its serialized byte length and spends that as a token
+// count, so a budgeted request can be refused for a projected overspend
+// well above what this endpoint reported. Reconciling the two estimates
+// would change money-path behavior and is deliberately not done here.
+func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
+	var aReq anthropicIngressRequest
+	if err := json.NewDecoder(r.Body).Decode(&aReq); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
+			"Failed to parse request body: "+err.Error())
+		return
+	}
+
+	if err := validateAnthropicMessages(aReq.Messages); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	req := translateAnthropicToOpenAI(&aReq)
+	inputTokens := budget.EstimateInputTokens(req)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"input_tokens": inputTokens,
+		"estimate":     true,
+	})
 }
 
 // ---------- streaming ----------

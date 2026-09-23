@@ -207,6 +207,7 @@ func Build(opts Options) (*App, error) {
 		ChatCompletion:    proxyHandler.ChatCompletion,
 		Responses:         proxyHandler.Responses,
 		AnthropicMessages: proxyHandler.AnthropicMessages,
+		CountTokens:       proxyHandler.CountTokens,
 		ListModels:        listModelsHandler(cfg),
 		Health:            healthHandler(),
 		MetricsSavings:    metricsHandler(store, "savings"),

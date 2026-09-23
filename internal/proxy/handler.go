@@ -90,6 +90,14 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1b. Reject a structurally invalid request before it reaches routing or
+	// any provider. A missing/empty `model` is NOT rejected here — that is
+	// the documented aion-auto path below and must keep routing normally.
+	if err := validateMessages(req.Messages); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
 	// 2. Determine routing.
 	var (
 		selectedModel *router.ModelOption

@@ -15,16 +15,22 @@ func NewEstimator(table *pricing.Table) *Estimator {
 	return &Estimator{table: table}
 }
 
-// EstimateInputTokens estimates token count from a request using a bytes/4 heuristic.
+// EstimateInputTokens estimates token count from a request using a bytes/4
+// heuristic. Tool call arguments and tool schemas are counted by their actual
+// size rather than a flat per-tool estimate, since either can dominate a
+// request's real size.
 func EstimateInputTokens(req *types.ChatCompletionRequest) int {
 	totalChars := 0
 	for _, msg := range req.Messages {
 		totalChars += len(msg.ContentString())
 		totalChars += len(msg.Role) + 4 // role + formatting overhead
+		for _, tc := range msg.ToolCalls {
+			totalChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
 	}
-	// Add overhead for tools.
-	// Rough estimate: each tool adds ~100 tokens.
-	totalChars += len(req.Tools) * 400
+	for _, tool := range req.Tools {
+		totalChars += len(tool.Function.Name) + len(tool.Function.Description) + len(tool.Function.Parameters)
+	}
 	return totalChars / 4
 }
 
