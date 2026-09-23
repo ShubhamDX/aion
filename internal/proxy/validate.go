@@ -105,8 +105,12 @@ func validateContent(field string, content json.RawMessage) error {
 		// through structurally so a valid multimodal, tool, or refusal
 		// history is never broken by a field shape this proxy doesn't use.
 		if block.Type == "text" {
+			// Unmarshaling JSON null into a string pointer succeeds as a
+			// no-op in Go (the same gotcha as content itself), so a literal
+			// null text field must be rejected explicitly before the
+			// unmarshal attempt below would silently accept it.
 			var text string
-			if len(block.Text) == 0 || json.Unmarshal(block.Text, &text) != nil {
+			if len(block.Text) == 0 || string(block.Text) == "null" || json.Unmarshal(block.Text, &text) != nil {
 				return fmt.Errorf("%s[%d] is a text block and requires a string-valued text field, got %s", field, j, part)
 			}
 		}

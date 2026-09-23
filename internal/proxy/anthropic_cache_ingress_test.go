@@ -42,6 +42,37 @@ func TestAnthropicIngressPreservesTextCacheCheckpoints(t *testing.T) {
 	}
 }
 
+// TestAnthropicIngressPreservesTrailingTextAfterToolResult proves a
+// tool_result turn's trailing text block reaches the translated request as
+// its own message, not just the token estimate: the translator used to
+// recognize the first block as tool_result and then only ever emit
+// tool_result blocks, silently dropping any other block type in that same
+// message from the request actually sent to the provider.
+func TestAnthropicIngressPreservesTrailingTextAfterToolResult(t *testing.T) {
+	raw := map[string]any{"model": "test", "max_tokens": 8, "messages": []map[string]any{
+		{"role": "user", "content": []map[string]any{
+			{"type": "tool_result", "tool_use_id": "t1", "content": "72F and sunny"},
+			{"type": "text", "text": "given that, what should I wear?"},
+		}},
+	}}
+	encoded, _ := json.Marshal(raw)
+	var in anthropicIngressRequest
+	if err := json.Unmarshal(encoded, &in); err != nil {
+		t.Fatal(err)
+	}
+	out := translateAnthropicToOpenAI(&in)
+
+	if len(out.Messages) != 2 {
+		t.Fatalf("got %d messages, want 2 (tool result + trailing text): %+v", len(out.Messages), out.Messages)
+	}
+	if out.Messages[0].Role != "tool" || out.Messages[0].ToolCallID != "t1" {
+		t.Fatalf("messages[0] = %+v, want the tool_result message", out.Messages[0])
+	}
+	if out.Messages[1].Role != "user" || out.Messages[1].ContentString() != "given that, what should I wear?" {
+		t.Fatalf("messages[1] = %+v, want the trailing text preserved as its own user message", out.Messages[1])
+	}
+}
+
 func TestAnthropicIngressCacheCheckpointReachesBedrockHTTP(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)

@@ -83,6 +83,7 @@ func TestValidateMessages(t *testing.T) {
 		{"content array holds a valid part followed by a malformed one", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hi"},123]`)}}, true},
 		{"text block missing the text field", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text"}]`)}}, true},
 		{"text block with a non-string text field", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":123}]`)}}, true},
+		{"text block with a null text field", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":null}]`)}}, true},
 		{"non-text block with no text field is untouched", []types.Message{{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"t1","name":"f","input":{}}]`)}}, false},
 	}
 	for _, tc := range cases {
@@ -116,6 +117,7 @@ func TestValidateAnthropicMessages(t *testing.T) {
 		{"content array holds a block with no type", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{}]`)}}, true},
 		{"text block missing the text field", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{"type":"text"}]`)}}, true},
 		{"text block with a non-string text field", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":123}]`)}}, true},
+		{"text block with a null text field", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":null}]`)}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -291,6 +293,7 @@ func TestChatCompletionRejectsMalformedTypedContentBlocks(t *testing.T) {
 	}{
 		{"text block missing the text field", `{"model":"haiku","messages":[{"role":"user","content":[{"type":"text"}]}]}`},
 		{"text block with a non-string text field", `{"model":"haiku","messages":[{"role":"user","content":[{"type":"text","text":123}]}]}`},
+		{"text block with a null text field", `{"model":"haiku","messages":[{"role":"user","content":[{"type":"text","text":null}]}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

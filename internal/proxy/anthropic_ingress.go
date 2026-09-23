@@ -159,13 +159,23 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 			}
 			if json.Unmarshal(blocks[0], &firstBlock) == nil && firstBlock.Type == "tool_result" {
 				// Each tool_result block becomes a separate tool-role message.
+				// A tool_result turn can carry trailing text blocks alongside
+				// the results (e.g. "given the result above, do X") — those
+				// must not be dropped, or they vanish from both token
+				// counting and the actual request sent to the provider.
+				var trailingText string
 				for _, raw := range blocks {
 					var tr struct {
 						Type      string          `json:"type"`
 						ToolUseID string          `json:"tool_use_id"`
 						Content   json.RawMessage `json:"content"`
+						Text      string          `json:"text"`
 					}
-					if json.Unmarshal(raw, &tr) == nil && tr.Type == "tool_result" {
+					if json.Unmarshal(raw, &tr) != nil {
+						continue
+					}
+					switch tr.Type {
+					case "tool_result":
 						content := extractToolResultContent(tr.Content)
 						b, _ := json.Marshal(content)
 						oReq.Messages = append(oReq.Messages, types.Message{
@@ -173,7 +183,16 @@ func translateAnthropicToOpenAI(aReq *anthropicIngressRequest) *types.ChatComple
 							Content:    b,
 							ToolCallID: tr.ToolUseID,
 						})
+					case "text":
+						trailingText += tr.Text
 					}
+				}
+				if trailingText != "" {
+					b, _ := json.Marshal(trailingText)
+					oReq.Messages = append(oReq.Messages, types.Message{
+						Role:    m.Role,
+						Content: b,
+					})
 				}
 				continue
 			}

@@ -84,6 +84,25 @@ func TestCountTokens(t *testing.T) {
 		}
 	})
 
+	// A tool_result turn can carry trailing text alongside the results (e.g.
+	// "given the result above, do X"). The translator used to recognize the
+	// first block as tool_result and only ever emit tool_result blocks,
+	// silently dropping any trailing text block from that same message —
+	// not just from the token estimate, but from the request sent to the
+	// provider entirely.
+	t.Run("trailing text after a tool_result block is counted, not dropped", func(t *testing.T) {
+		const textChars = 100_000
+		withoutText := `{"model":"claude-haiku","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}]}`
+		withText := `{"model":"claude-haiku","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},{"type":"text","text":"` + strings.Repeat("x", textChars) + `"}]}]}`
+
+		base := countTokensEstimate(t, h, withoutText)
+		withTrailingText := countTokensEstimate(t, h, withText)
+
+		if want := base + textChars/4 - 100; withTrailingText < want {
+			t.Fatalf("a %d-char trailing text block moved the estimate from %d to %d, want at least %d", textChars, base, withTrailingText, want)
+		}
+	})
+
 	t.Run("empty messages is rejected, not silently estimated as zero", func(t *testing.T) {
 		body := `{"model":"claude-haiku","messages":[]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
