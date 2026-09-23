@@ -716,12 +716,16 @@ func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 // CountTokens implements POST /v1/messages/count_tokens.
 //
 // AION has no access to any provider's exact tokenizer (Bedrock in
-// particular exposes none), so this returns a heuristic estimate using the
-// same chars/4 approximation already trusted for budget pre-checks
-// elsewhere in the gateway (see internal/budget.EstimateInputTokens) —
-// not an exact, provider-verified count. The response's `estimate: true`
-// field makes that explicit so a caller doing exact accounting knows not
-// to treat this as authoritative.
+// particular exposes none), so this returns a chars/4 heuristic, not an
+// exact count. The response's `estimate: true` field makes that explicit
+// so a caller doing exact accounting knows not to treat it as
+// authoritative.
+//
+// This is not the number the budget path reserves against: estimatedCost
+// sizes a request by its serialized byte length and spends that as a token
+// count, so a budgeted request can be refused for a projected overspend
+// well above what this endpoint reported. Reconciling the two estimates
+// would change money-path behavior and is deliberately not done here.
 func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 	var aReq anthropicIngressRequest
 	if err := json.NewDecoder(r.Body).Decode(&aReq); err != nil {
