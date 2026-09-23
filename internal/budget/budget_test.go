@@ -171,6 +171,94 @@ func TestExceededErrorCustomerMessageHasNoDollarAmount(t *testing.T) {
 	}
 }
 
+func TestReserveIsolatesSeparateUsers(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+	if _, err := manager.Reserve(ctx, "user-a", 5, 5, 20); err != nil {
+		t.Fatalf("user-a Reserve: %v", err)
+	}
+	// user-a is now at its daily limit; user-b must have its own untouched budget.
+	if _, err := manager.Reserve(ctx, "user-a", 0.01, 5, 20); err == nil {
+		t.Fatal("user-a Reserve must be rejected once its own daily limit is hit")
+	}
+	if _, err := manager.Reserve(ctx, "user-b", 5, 5, 20); err != nil {
+		t.Fatalf("user-b Reserve must succeed against its own untouched budget, got: %v", err)
+	}
+}
+
+func TestReserveSurvivesStoreRestart(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "telemetry.db")
+
+	store, err := telemetry.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	manager := NewManager(store)
+	date, err := manager.Reserve(ctx, "tester", 4.50, 5, 20)
+	if err != nil {
+		t.Fatalf("Reserve before restart: %v", err)
+	}
+	if err := manager.Settle(ctx, "tester", date, 4.50, 4.50); err != nil {
+		t.Fatalf("Settle before restart: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Simulate a process restart: reopen the same on-disk store and rebuild the Manager.
+	restarted, err := telemetry.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore after restart: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedManager := NewManager(restarted)
+
+	if _, err := restartedManager.Reserve(ctx, "tester", 0.51, 5, 20); err == nil {
+		t.Fatal("usage recorded before restart must still count against the limit after restart")
+	}
+	usage, err := restarted.GetDailyUsage(ctx, budgetStorageKey("tester"), time.Now().UTC().Format("2006-01-02"))
+	if err != nil {
+		t.Fatalf("GetDailyUsage after restart: %v", err)
+	}
+	if usage != 4.50 {
+		t.Fatalf("daily usage after restart = %.2f, want 4.50", usage)
+	}
+}
+
+func TestReserveRolloverAcrossDayAndMonthBoundaries(t *testing.T) {
+	manager, store := newTestManager(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+	// AddDate on `now` directly can normalize back into the current month (a
+	// month subtracted from e.g. Mar 31 lands on Mar 3, not Feb), silently
+	// skipping the monthly-boundary case it's meant to exercise. Anchoring to
+	// the 1st of the month first is safe on every date, since day 1 never
+	// overflows a month subtraction.
+	firstOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	lastMonth := firstOfThisMonth.AddDate(0, -1, 0).Format("2006-01")
+	if lastMonth == now.Format("2006-01") {
+		t.Fatalf("test bug: computed last month %q equals the current month", lastMonth)
+	}
+	storageID := budgetStorageKey("tester")
+
+	// Seed spend that landed on a prior day and, separately, a prior calendar
+	// month, both against the SAME api key. Neither must count toward today's
+	// daily limit or this month's monthly limit.
+	if err := store.RecordBudgetUsage(ctx, storageID, yesterday, 4.99); err != nil {
+		t.Fatalf("seed yesterday's usage: %v", err)
+	}
+	if err := store.RecordBudgetUsage(ctx, storageID, lastMonth+"-01", 19.99); err != nil {
+		t.Fatalf("seed last month's usage: %v", err)
+	}
+
+	if _, err := manager.Reserve(ctx, "tester", 5, 5, 20); err != nil {
+		t.Fatalf("today's Reserve must not be blocked by a prior day's/month's usage: %v", err)
+	}
+}
+
 func TestExceededErrorCustomerMessageNamesTheScopeThatWasHit(t *testing.T) {
 	daily := &ExceededError{Scope: "daily", Limit: 3, ResetAt: time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)}
 	if got, want := daily.CustomerMessage(), "This request would exceed the daily usage limit. Resets 2026-07-31 00:00 UTC."; got != want {
