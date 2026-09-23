@@ -11,6 +11,7 @@ import (
 )
 
 func TestValidateMessages(t *testing.T) {
+	refusalText := "I can't help with that."
 	cases := []struct {
 		name    string
 		msgs    []types.Message
@@ -53,6 +54,22 @@ func TestValidateMessages(t *testing.T) {
 			"assistant message with explicit null content and no tool_calls is still invalid",
 			[]types.Message{{Role: "assistant", Content: json.RawMessage(`null`)}},
 			true,
+		},
+		{
+			"assistant refusal turn with null content",
+			[]types.Message{
+				{Role: "user", Content: json.RawMessage(`"do something disallowed"`)},
+				{Role: "assistant", Content: json.RawMessage(`null`), Refusal: &refusalText},
+			},
+			false,
+		},
+		{
+			"assistant refusal turn with omitted content",
+			[]types.Message{
+				{Role: "user", Content: json.RawMessage(`"do something disallowed"`)},
+				{Role: "assistant", Refusal: &refusalText},
+			},
+			false,
 		},
 		{"content array holds a null element", []types.Message{{Role: "user", Content: json.RawMessage(`[null]`)}}, true},
 		{"content array holds a bare number", []types.Message{{Role: "user", Content: json.RawMessage(`[123]`)}}, true},

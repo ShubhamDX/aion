@@ -27,12 +27,13 @@ func validateMessages(messages []types.Message) error {
 			return fmt.Errorf("messages[%d].role is required", i)
 		}
 		if contentAbsent(m.Content) {
-			// An assistant turn that only issues tool calls carries no content
-			// in the OpenAI wire format. Clients spell that either by omitting
-			// the field or by sending an explicit null, and both are valid;
-			// every other message, including a tool-result reply, must have
-			// content.
-			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// An assistant turn carries no content in the OpenAI wire format
+			// when it only issues tool calls, and when it refuses (the text is
+			// in refusal instead). Clients spell the empty content either by
+			// omitting the field or by sending an explicit null, and both are
+			// valid; every other message, including a tool-result reply, must
+			// have content.
+			if m.Role == "assistant" && (len(m.ToolCalls) > 0 || m.Refusal != nil) {
 				continue
 			}
 			return fmt.Errorf("messages[%d].content is required", i)
