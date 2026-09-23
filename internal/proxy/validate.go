@@ -26,13 +26,15 @@ func validateMessages(messages []types.Message) error {
 		if m.Role == "" {
 			return fmt.Errorf("messages[%d].role is required", i)
 		}
-		// An assistant turn that only issues tool calls carries no content in
-		// the OpenAI wire format; every other message, including a tool-result
-		// reply, must have some.
-		if m.Role == "assistant" && len(m.ToolCalls) > 0 && len(m.Content) == 0 {
-			continue
-		}
-		if len(m.Content) == 0 {
+		if contentAbsent(m.Content) {
+			// An assistant turn that only issues tool calls carries no content
+			// in the OpenAI wire format. Clients spell that either by omitting
+			// the field or by sending an explicit null, and both are valid;
+			// every other message, including a tool-result reply, must have
+			// content.
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+				continue
+			}
 			return fmt.Errorf("messages[%d].content is required", i)
 		}
 		if !validContentShape(m.Content) {
@@ -54,7 +56,7 @@ func validateAnthropicMessages(messages []anthropicIngressMsg) error {
 		if m.Role == "" {
 			return fmt.Errorf("messages[%d].role is required", i)
 		}
-		if len(m.Content) == 0 {
+		if contentAbsent(m.Content) {
 			return fmt.Errorf("messages[%d].content is required", i)
 		}
 		if !validContentShape(m.Content) {
@@ -64,17 +66,19 @@ func validateAnthropicMessages(messages []anthropicIngressMsg) error {
 	return nil
 }
 
-// validContentShape reports whether content decodes to a JSON string or a
-// non-empty JSON array of content parts, the only two shapes either wire
-// format uses. A bare null, number, boolean, or object is not a usable
-// message content shape and would otherwise reach the provider unexamined.
+// contentAbsent reports whether a message carries no content at all. An
+// omitted field and an explicit JSON null mean the same thing on the wire,
+// so callers must not treat one as present and the other as missing.
+func contentAbsent(content json.RawMessage) bool {
+	return len(content) == 0 || string(content) == "null"
+}
+
+// validContentShape reports whether content, already known to be present,
+// decodes to a JSON string or a non-empty JSON array of content parts, the
+// only two shapes either wire format uses. A bare number, boolean, or object
+// is not a usable message content shape and would otherwise reach the
+// provider unexamined.
 func validContentShape(content json.RawMessage) bool {
-	// Unmarshaling JSON null into any pointer target succeeds as a no-op in
-	// Go, so it must be rejected explicitly before trying the string/array
-	// shapes below, or a literal `null` would pass as a valid empty string.
-	if string(content) == "null" {
-		return false
-	}
 	var s string
 	if err := json.Unmarshal(content, &s); err == nil {
 		return true

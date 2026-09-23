@@ -40,6 +40,20 @@ func TestValidateMessages(t *testing.T) {
 		{"content is a bare object", []types.Message{{Role: "user", Content: json.RawMessage(`{}`)}}, true},
 		{"content is an empty array", []types.Message{{Role: "user", Content: json.RawMessage(`[]`)}}, true},
 		{"content is a non-empty content-part array", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hi"}]`)}}, false},
+		{
+			"assistant tool-call-only message with explicit null content",
+			[]types.Message{
+				{Role: "user", Content: json.RawMessage(`"what's the weather?"`)},
+				{Role: "assistant", Content: json.RawMessage(`null`), ToolCalls: []types.ToolCall{{ID: "call_1", Type: "function", Function: types.FunctionCall{Name: "get_weather", Arguments: `{"city":"nyc"}`}}}},
+				{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"72F and sunny"`)},
+			},
+			false,
+		},
+		{
+			"assistant message with explicit null content and no tool_calls is still invalid",
+			[]types.Message{{Role: "assistant", Content: json.RawMessage(`null`)}},
+			true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,32 +172,44 @@ func TestChatCompletionPreservesAutoRoutingOnMissingModel(t *testing.T) {
 }
 
 // TestChatCompletionAcceptsToolCallContinuation proves a valid multi-turn
-// tool-calling conversation (assistant message with tool_calls and no
-// content, followed by a tool-result reply) is NOT rejected by validation.
+// tool-calling conversation (assistant message with tool_calls, followed by
+// a tool-result reply) is NOT rejected by validation, whether the client
+// omits the assistant message's content or sends it as an explicit null.
 // A nil classifier/router means reaching dispatch panics; recovering from
 // that panic is how this test confirms validation let the request through.
 func TestChatCompletionAcceptsToolCallContinuation(t *testing.T) {
-	defer func() { recover() }()
-	h := &Handler{}
-	body := `{"model":"some-model","messages":[
-		{"role":"user","content":"what's the weather in nyc?"},
-		{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"nyc\"}"}}]},
-		{"role":"tool","tool_call_id":"call_1","content":"72F and sunny"}
-	]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	rec := httptest.NewRecorder()
+	cases := []struct {
+		name         string
+		assistantMsg string
+	}{
+		{"content omitted", `{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"nyc\"}"}}]}`},
+		{"content is explicit null", `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"nyc\"}"}}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() { recover() }()
+			h := &Handler{}
+			body := `{"model":"some-model","messages":[
+				{"role":"user","content":"what's the weather in nyc?"},
+				` + tc.assistantMsg + `,
+				{"role":"tool","tool_call_id":"call_1","content":"72F and sunny"}
+			]}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			rec := httptest.NewRecorder()
 
-	h.ChatCompletion(rec, req)
+			h.ChatCompletion(rec, req)
 
-	if rec.Code == http.StatusBadRequest {
-		var resp struct {
-			Error struct {
-				Type string `json:"type"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err == nil && resp.Error.Type == "invalid_request" {
-			t.Fatalf("valid tool-call continuation was rejected by input validation: %s", rec.Body.String())
-		}
+			if rec.Code == http.StatusBadRequest {
+				var resp struct {
+					Error struct {
+						Type string `json:"type"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &resp); err == nil && resp.Error.Type == "invalid_request" {
+					t.Fatalf("valid tool-call continuation was rejected by input validation: %s", rec.Body.String())
+				}
+			}
+		})
 	}
 }
 
