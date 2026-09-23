@@ -69,6 +69,12 @@ func validateAnthropicMessages(messages []anthropicIngressMsg) error {
 // format uses. A bare null, number, boolean, or object is not a usable
 // message content shape and would otherwise reach the provider unexamined.
 func validContentShape(content json.RawMessage) bool {
+	// Unmarshaling JSON null into any pointer target succeeds as a no-op in
+	// Go, so it must be rejected explicitly before trying the string/array
+	// shapes below, or a literal `null` would pass as a valid empty string.
+	if string(content) == "null" {
+		return false
+	}
 	var s string
 	if err := json.Unmarshal(content, &s); err == nil {
 		return true
