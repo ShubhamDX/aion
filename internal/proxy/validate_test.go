@@ -54,6 +54,10 @@ func TestValidateMessages(t *testing.T) {
 			[]types.Message{{Role: "assistant", Content: json.RawMessage(`null`)}},
 			true,
 		},
+		{"content array holds a null element", []types.Message{{Role: "user", Content: json.RawMessage(`[null]`)}}, true},
+		{"content array holds a bare number", []types.Message{{Role: "user", Content: json.RawMessage(`[123]`)}}, true},
+		{"content array holds an object with no type", []types.Message{{Role: "user", Content: json.RawMessage(`[{}]`)}}, true},
+		{"content array holds a valid part followed by a malformed one", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hi"},123]`)}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,6 +85,9 @@ func TestValidateAnthropicMessages(t *testing.T) {
 		{"content is a bare object", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`{}`)}}, true},
 		{"content is an empty array", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[]`)}}, true},
 		{"content is a non-empty content-block array", []anthropicIngressMsg{{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"t1","name":"get_weather","input":{}}]`)}}, false},
+		{"content array holds a null block", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[null]`)}}, true},
+		{"content array holds a bare number", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[123]`)}}, true},
+		{"content array holds a block with no type", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{}]`)}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,6 +119,9 @@ func TestChatCompletionRejectsInvalidInputBeforeDispatch(t *testing.T) {
 		{"content is a bare number", `{"model":"some-model","messages":[{"role":"user","content":123}]}`},
 		{"content is a bare object", `{"model":"some-model","messages":[{"role":"user","content":{}}]}`},
 		{"content is an empty array", `{"model":"some-model","messages":[{"role":"user","content":[]}]}`},
+		{"content array holds a null element", `{"model":"some-model","messages":[{"role":"user","content":[null]}]}`},
+		{"content array holds a bare number", `{"model":"some-model","messages":[{"role":"user","content":[123]}]}`},
+		{"content array holds an object with no type", `{"model":"some-model","messages":[{"role":"user","content":[{}]}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -226,6 +236,8 @@ func TestAnthropicMessagesRejectsInvalidInputBeforeDispatch(t *testing.T) {
 		{"empty messages array", `{"model":"some-model","max_tokens":100,"messages":[]}`},
 		{"content is bare null", `{"model":"some-model","max_tokens":100,"messages":[{"role":"user","content":null}]}`},
 		{"content is a bare number", `{"model":"some-model","max_tokens":100,"messages":[{"role":"user","content":123}]}`},
+		{"content array holds a null block", `{"model":"some-model","max_tokens":100,"messages":[{"role":"user","content":[null]}]}`},
+		{"content array holds an object with no type", `{"model":"some-model","max_tokens":100,"messages":[{"role":"user","content":[{}]}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

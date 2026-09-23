@@ -37,8 +37,8 @@ func validateMessages(messages []types.Message) error {
 			}
 			return fmt.Errorf("messages[%d].content is required", i)
 		}
-		if !validContentShape(m.Content) {
-			return fmt.Errorf("messages[%d].content must be a string or an array of content parts, got %s", i, m.Content)
+		if err := validateContent(fmt.Sprintf("messages[%d].content", i), m.Content); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -59,8 +59,8 @@ func validateAnthropicMessages(messages []anthropicIngressMsg) error {
 		if contentAbsent(m.Content) {
 			return fmt.Errorf("messages[%d].content is required", i)
 		}
-		if !validContentShape(m.Content) {
-			return fmt.Errorf("messages[%d].content must be a string or an array of content parts, got %s", i, m.Content)
+		if err := validateContent(fmt.Sprintf("messages[%d].content", i), m.Content); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -73,19 +73,29 @@ func contentAbsent(content json.RawMessage) bool {
 	return len(content) == 0 || string(content) == "null"
 }
 
-// validContentShape reports whether content, already known to be present,
-// decodes to a JSON string or a non-empty JSON array of content parts, the
-// only two shapes either wire format uses. A bare number, boolean, or object
-// is not a usable message content shape and would otherwise reach the
-// provider unexamined.
-func validContentShape(content json.RawMessage) bool {
+// validateContent checks that content, already known to be present, is one of
+// the two shapes either wire format uses: a JSON string, or a non-empty array
+// whose every element is a content block (an object carrying a non-empty
+// `type`). A bare number, boolean or object, and an array holding nulls,
+// scalars or untyped objects, would otherwise reach the provider unexamined
+// and come back as an opaque upstream error. field is the caller's JSON path
+// to content, used to build the error message.
+func validateContent(field string, content json.RawMessage) error {
 	var s string
 	if err := json.Unmarshal(content, &s); err == nil {
-		return true
+		return nil
 	}
 	var parts []json.RawMessage
-	if err := json.Unmarshal(content, &parts); err == nil {
-		return len(parts) > 0
+	if err := json.Unmarshal(content, &parts); err != nil || len(parts) == 0 {
+		return fmt.Errorf("%s must be a string or an array of content parts, got %s", field, content)
 	}
-	return false
+	for j, part := range parts {
+		var block struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(part, &block); err != nil || block.Type == "" {
+			return fmt.Errorf("%s[%d] must be a content part object with a non-empty type, got %s", field, j, part)
+		}
+	}
+	return nil
 }
