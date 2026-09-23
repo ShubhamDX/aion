@@ -232,7 +232,16 @@ func TestReserveRolloverAcrossDayAndMonthBoundaries(t *testing.T) {
 	now := time.Now().UTC()
 
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
-	lastMonth := now.AddDate(0, -1, 0).Format("2006-01")
+	// AddDate on `now` directly can normalize back into the current month (a
+	// month subtracted from e.g. Mar 31 lands on Mar 3, not Feb), silently
+	// skipping the monthly-boundary case it's meant to exercise. Anchoring to
+	// the 1st of the month first is safe on every date, since day 1 never
+	// overflows a month subtraction.
+	firstOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	lastMonth := firstOfThisMonth.AddDate(0, -1, 0).Format("2006-01")
+	if lastMonth == now.Format("2006-01") {
+		t.Fatalf("test bug: computed last month %q equals the current month", lastMonth)
+	}
 	storageID := budgetStorageKey("tester")
 
 	// Seed spend that landed on a prior day and, separately, a prior calendar
@@ -241,10 +250,8 @@ func TestReserveRolloverAcrossDayAndMonthBoundaries(t *testing.T) {
 	if err := store.RecordBudgetUsage(ctx, storageID, yesterday, 4.99); err != nil {
 		t.Fatalf("seed yesterday's usage: %v", err)
 	}
-	if lastMonth != now.Format("2006-01") {
-		if err := store.RecordBudgetUsage(ctx, storageID, lastMonth+"-01", 19.99); err != nil {
-			t.Fatalf("seed last month's usage: %v", err)
-		}
+	if err := store.RecordBudgetUsage(ctx, storageID, lastMonth+"-01", 19.99); err != nil {
+		t.Fatalf("seed last month's usage: %v", err)
 	}
 
 	if _, err := manager.Reserve(ctx, "tester", 5, 5, 20); err != nil {
