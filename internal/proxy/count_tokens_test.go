@@ -61,6 +61,29 @@ func TestCountTokens(t *testing.T) {
 		}
 	})
 
+	// The Claude Code preflight this endpoint exists to serve is dominated by
+	// the system prompt and the tool schemas rather than by the message text,
+	// so a count that ignored either would be useless in practice.
+	t.Run("system prompt is counted", func(t *testing.T) {
+		const systemChars = 2500 // 500 repetitions of "word "
+		base := countTokensEstimate(t, h, `{"model":"claude-haiku","messages":[{"role":"user","content":"hi"}]}`)
+		withSystem := countTokensEstimate(t, h, `{"model":"claude-haiku","system":"`+strings.Repeat("word ", 500)+`","messages":[{"role":"user","content":"hi"}]}`)
+
+		if want := base + systemChars/4 - 100; withSystem < want {
+			t.Fatalf("a %d-char system prompt moved the estimate from %d to %d, want at least %d", systemChars, base, withSystem, want)
+		}
+	})
+
+	t.Run("tool definitions are counted", func(t *testing.T) {
+		const schemaChars = 2000
+		base := countTokensEstimate(t, h, `{"model":"claude-haiku","messages":[{"role":"user","content":"hi"}]}`)
+		withTools := countTokensEstimate(t, h, `{"model":"claude-haiku","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"f","description":"d","input_schema":{"type":"object","properties":{"p":{"type":"string","description":"`+strings.Repeat("x", schemaChars)+`"}}}}]}`)
+
+		if want := base + schemaChars/4 - 100; withTools < want {
+			t.Fatalf("a %d-char tool schema moved the estimate from %d to %d, want at least %d", schemaChars, base, withTools, want)
+		}
+	})
+
 	t.Run("empty messages is rejected, not silently estimated as zero", func(t *testing.T) {
 		body := `{"model":"claude-haiku","messages":[]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
@@ -83,4 +106,20 @@ func TestCountTokens(t *testing.T) {
 			t.Fatalf("status = %d, want 400 for malformed JSON; body=%s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+func countTokensEstimate(t *testing.T, h *Handler, body string) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.CountTokens(rec, httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		InputTokens int `json:"input_tokens"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, rec.Body.String())
+	}
+	return resp.InputTokens
 }
