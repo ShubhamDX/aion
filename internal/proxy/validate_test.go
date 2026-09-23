@@ -1,12 +1,18 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/ShubhamDX/aion/internal/config"
+	"github.com/ShubhamDX/aion/internal/pricing"
+	"github.com/ShubhamDX/aion/internal/provider"
+	"github.com/ShubhamDX/aion/internal/router"
 	"github.com/ShubhamDX/aion/internal/types"
 )
 
@@ -75,6 +81,9 @@ func TestValidateMessages(t *testing.T) {
 		{"content array holds a bare number", []types.Message{{Role: "user", Content: json.RawMessage(`[123]`)}}, true},
 		{"content array holds an object with no type", []types.Message{{Role: "user", Content: json.RawMessage(`[{}]`)}}, true},
 		{"content array holds a valid part followed by a malformed one", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hi"},123]`)}}, true},
+		{"text block missing the text field", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text"}]`)}}, true},
+		{"text block with a non-string text field", []types.Message{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":123}]`)}}, true},
+		{"non-text block with no text field is untouched", []types.Message{{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"t1","name":"f","input":{}}]`)}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +114,8 @@ func TestValidateAnthropicMessages(t *testing.T) {
 		{"content array holds a null block", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[null]`)}}, true},
 		{"content array holds a bare number", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[123]`)}}, true},
 		{"content array holds a block with no type", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{}]`)}}, true},
+		{"text block missing the text field", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{"type":"text"}]`)}}, true},
+		{"text block with a non-string text field", []anthropicIngressMsg{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":123}]`)}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -167,43 +178,31 @@ func TestChatCompletionRejectsInvalidInputBeforeDispatch(t *testing.T) {
 
 // TestChatCompletionPreservesAutoRoutingOnMissingModel proves a missing
 // `model` field is NOT rejected by input validation — it must still reach
-// routing (the documented aion-auto path). A nil classifier/router here
-// means it panics if reached with no messages error first; we only assert
-// it does NOT return the validation-layer 400, confirming the two codepaths
-// are distinct.
+// routing (the documented aion-auto path) and dispatch to a provider exactly
+// once, using a functioning fake classifier and provider rather than
+// inferring success from a panic against nil dependencies.
 func TestChatCompletionPreservesAutoRoutingOnMissingModel(t *testing.T) {
-	defer func() {
-		// A panic here (nil classifier/router) is expected once messages
-		// validation passes and routing is attempted — that proves this
-		// request was NOT rejected by input validation, which is the point
-		// of this test. Swallow it so the test doesn't fail on the panic.
-		recover()
-	}()
-	h := &Handler{}
+	calls := 0
+	h := handlerWithClassifierAndCallCounter(&calls)
 	body := `{"messages":[{"role":"user","content":"hi"}]}` // no "model" field
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
 	h.ChatCompletion(rec, req)
 
-	if rec.Code == http.StatusBadRequest {
-		var resp struct {
-			Error struct {
-				Type string `json:"type"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err == nil && resp.Error.Type == "invalid_request" {
-			t.Fatalf("missing `model` was rejected by input validation; it must fall through to aion-auto routing instead")
-		}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("provider was called %d times, want 1 (missing `model` must still dispatch via aion-auto)", calls)
 	}
 }
 
 // TestChatCompletionAcceptsToolCallContinuation proves a valid multi-turn
 // tool-calling conversation (assistant message with tool_calls, followed by
-// a tool-result reply) is NOT rejected by validation, whether the client
-// omits the assistant message's content or sends it as an explicit null.
-// A nil classifier/router means reaching dispatch panics; recovering from
-// that panic is how this test confirms validation let the request through.
+// a tool-result reply) is NOT rejected by validation and dispatches exactly
+// once, whether the client omits the assistant message's content or sends it
+// as an explicit null.
 func TestChatCompletionAcceptsToolCallContinuation(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -214,9 +213,9 @@ func TestChatCompletionAcceptsToolCallContinuation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer func() { recover() }()
-			h := &Handler{}
-			body := `{"model":"some-model","messages":[
+			calls := 0
+			h := handlerWithCallCounter(&calls)
+			body := `{"model":"haiku","messages":[
 				{"role":"user","content":"what's the weather in nyc?"},
 				` + tc.assistantMsg + `,
 				{"role":"tool","tool_call_id":"call_1","content":"72F and sunny"}
@@ -226,17 +225,109 @@ func TestChatCompletionAcceptsToolCallContinuation(t *testing.T) {
 
 			h.ChatCompletion(rec, req)
 
-			if rec.Code == http.StatusBadRequest {
-				var resp struct {
-					Error struct {
-						Type string `json:"type"`
-					} `json:"error"`
-				}
-				if err := json.Unmarshal(rec.Body.Bytes(), &resp); err == nil && resp.Error.Type == "invalid_request" {
-					t.Fatalf("valid tool-call continuation was rejected by input validation: %s", rec.Body.String())
-				}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if calls != 1 {
+				t.Fatalf("provider was called %d times, want 1", calls)
 			}
 		})
+	}
+}
+
+// countingProvider is a functioning fake provider (unlike the nil-dependency
+// Handler used elsewhere in this file) that records how many times it was
+// actually called, so a test can assert zero dispatch rather than infer it
+// from a panic.
+type countingProvider struct{ calls *int }
+
+func (countingProvider) Name() string { return "bedrock" }
+func (p countingProvider) Send(context.Context, *types.ChatCompletionRequest, string) (*provider.Response, error) {
+	*p.calls++
+	return &provider.Response{
+		StatusCode: http.StatusOK,
+		ChatResponse: &types.ChatCompletionResponse{
+			Choices: []types.Choice{{Message: types.Message{Role: "assistant", Content: json.RawMessage(`"ok"`)}, FinishReason: "stop"}},
+			Usage:   types.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		},
+	}, nil
+}
+func (p countingProvider) SendStream(context.Context, *types.ChatCompletionRequest, string) (provider.StreamReader, error) {
+	*p.calls++
+	return nil, fmt.Errorf("countingProvider: streaming not used by these tests")
+}
+
+// handlerWithCallCounter builds a Handler with a real router and a real
+// (counting) provider, model "haiku" routable end to end, so a test can prove
+// a request either never reached the provider or reached it exactly once.
+func handlerWithCallCounter(calls *int) *Handler {
+	cfg := &config.Config{}
+	cfg.Providers.Bedrock = &config.ProviderConfig{
+		Models: []config.ModelConfig{{ID: "haiku", Tier: 1, InputPricePer1M: 1, OutputPricePer1M: 2}},
+	}
+	reg := provider.NewRegistry()
+	reg.Register(countingProvider{calls: calls})
+	return &Handler{router: router.NewRouter(cfg, nil), registry: reg, pricing: pricing.NewTable(cfg.Providers)}
+}
+
+// handlerWithClassifierAndCallCounter is handlerWithCallCounter plus a
+// working classifier (fixedTierClassifier, defined in
+// post_route_seam_test.go), routable end to end through the aion-auto path.
+func handlerWithClassifierAndCallCounter(calls *int) *Handler {
+	h := handlerWithCallCounter(calls)
+	h.classifier = fixedTierClassifier{tier: types.Tier1}
+	return h
+}
+
+// TestChatCompletionRejectsMalformedTypedContentBlocks proves the two
+// required-field gaps found in review (a "text" block missing its text
+// field, and one whose text field is not a string) are rejected with 400 and
+// never reach the provider, using a functioning fake provider rather than a
+// nil-dependency panic.
+func TestChatCompletionRejectsMalformedTypedContentBlocks(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"text block missing the text field", `{"model":"haiku","messages":[{"role":"user","content":[{"type":"text"}]}]}`},
+		{"text block with a non-string text field", `{"model":"haiku","messages":[{"role":"user","content":[{"type":"text","text":123}]}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			h := handlerWithCallCounter(&calls)
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+
+			h.ChatCompletion(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if calls != 0 {
+				t.Fatalf("provider was called %d times, want 0", calls)
+			}
+		})
+	}
+}
+
+// TestChatCompletionAcceptsValidTypedContentBlocks proves a well-formed text
+// content block reaches the provider exactly once, so the stricter check
+// added for malformed blocks does not also reject the valid shape.
+func TestChatCompletionAcceptsValidTypedContentBlocks(t *testing.T) {
+	calls := 0
+	h := handlerWithCallCounter(&calls)
+	body := `{"model":"haiku","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletion(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("provider was called %d times, want 1", calls)
 	}
 }
 

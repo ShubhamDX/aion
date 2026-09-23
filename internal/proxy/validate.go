@@ -92,10 +92,23 @@ func validateContent(field string, content json.RawMessage) error {
 	}
 	for j, part := range parts {
 		var block struct {
-			Type string `json:"type"`
+			Type string          `json:"type"`
+			Text json.RawMessage `json:"text"`
 		}
 		if err := json.Unmarshal(part, &block); err != nil || block.Type == "" {
 			return fmt.Errorf("%s[%d] must be a content part object with a non-empty type, got %s", field, j, part)
+		}
+		// Only "text" gets a required-field check here: it is the one block
+		// type this proxy reads directly (ContentString, the Anthropic
+		// text+tool_use merge). Other known types (tool_use, tool_result,
+		// image_url, and any type this proxy does not interpret) are passed
+		// through structurally so a valid multimodal, tool, or refusal
+		// history is never broken by a field shape this proxy doesn't use.
+		if block.Type == "text" {
+			var text string
+			if len(block.Text) == 0 || json.Unmarshal(block.Text, &text) != nil {
+				return fmt.Errorf("%s[%d] is a text block and requires a string-valued text field, got %s", field, j, part)
+			}
 		}
 	}
 	return nil
